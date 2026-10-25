@@ -1,0 +1,39 @@
+dependencies:
+  esp_codec_dev:
+    public: true
+    version: ~1.5
+  esp_lcd_ek79007: '>=2.0.1,<3.0.0'
+  esp_lcd_ili9881c:
+    version: '>=1.0.3,<2.0.0'
+  esp_lcd_touch_gt911:
+    version: ^1
+  esp_lcd_jd9165: "*"
+  esp_video:
+    public: true
+    # 原本是 ~2.0。BSP 源码里并没有用到 esp_video（只在文档里提了一下），
+    # 但 ~2.0 会把整个工程钉死在 2.0.x，而 2.0.1 的 ISP 管线在 OV02C10 上跑不起来
+    # （不停刷 ISP: fifo overflow 直到看门狗复位）。放开到 >=2.0 才能用 2.5.0。
+    version: '>=2.0'
+  espressif/esp_lcd_lt8912b:
+    version: '>=0.1.3,<1.0.0'
+  espressif/esp_lvgl_port:
+    public: true
+    version: ^2
+  idf: '>=5.4'
+  lvgl/lvgl: '>=8,<10'
+  usb:
+    public: true
+    rules:
+    - if: idf_version >=6.0
+    version: ^1.0.0
+description: Board Support Package (BSP) for ESP32-P4 Function EV Board (preview)
+repository: git://github.com/espressif/esp-bsp.git
+repository_info:
+  commit_sha: 4b3f542031dfe2a0b955517f804a99734f2cf8bb
+  path: bsp/esp32_p4_function_ev_board
+tags:
+- bsp
+targets:
+- esp32p4
+url: https://github.com/espressif/esp-bsp/tree/master/bsp/esp32_p4_function_ev_board
+version: 5.2.3

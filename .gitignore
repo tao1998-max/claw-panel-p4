@@ -1,0 +1,14 @@
+# 构建产物与本地路径缓存
+build/
+dependencies.lock
+sdkconfig.old
+*.log
+
+# 组件管理器自动下载的依赖（由 main/idf_component.yml + local_components 还原）
+managed_components/
+
+# 字体生成工具的 npm 依赖（package-lock.json 可还原）
+tools/fonts/node_modules/
+
+# 编辑器/机器相关配置
+.vscode/

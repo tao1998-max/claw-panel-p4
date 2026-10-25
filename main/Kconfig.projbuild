@@ -1,0 +1,43 @@
+menu "P4 Template"
+
+    config TEMPLATE_ENABLE_CAMERA
+        bool "启动 MIPI-CSI 摄像头"
+        default n
+        help
+            接上 OV5647 / SC2336 摄像头模组后打开。未接摄像头时初始化会失败，
+            但不影响其它模块，状态栏会显示 CAM: disabled / fail。
+
+    config TEMPLATE_ENABLE_WIFI
+        bool "启动 Wi-Fi（ESP32-C6 协处理器）"
+        default n
+        help
+            P4 本身没有射频，Wi-Fi 由板载 C6 经 SDIO 提供。
+            要求 C6 上烧有与 esp_hosted 版本匹配的从机固件，
+            否则会出现 RPC 超时。首次使用建议先保持关闭。
+
+    if TEMPLATE_ENABLE_WIFI
+
+        config TEMPLATE_WIFI_SSID
+            string "Wi-Fi 名称 (SSID)"
+            default ""
+
+        config TEMPLATE_WIFI_PASSWORD
+            string "Wi-Fi 密码"
+            default ""
+
+    endif
+
+    config TEMPLATE_RS485_ECHO
+        bool "RS485 回环测试"
+        default y
+        help
+            打开后 UART1(26/27) 收到的数据原样回发，可用于验证 RS485 收发器。
+
+    config TEMPLATE_UI_SELFTEST
+        bool "界面自检：每 2 秒自动切页"
+        default n
+        help
+            打开后每 2 秒在「主页 / 设备状态 / 设置」之间自动切换，并在日志里
+            打印 free heap，用来验证反复切页不泄漏。发布固件请关闭。
+
+endmenu

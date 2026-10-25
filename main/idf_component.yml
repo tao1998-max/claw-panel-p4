@@ -1,0 +1,25 @@
+## IDF Component Manager Manifest File
+dependencies:
+  idf: ">=5.5"
+
+  lvgl/lvgl: "~9.5.0"
+  esp_lvgl_port: "~2.7.2"
+
+  # 板级支持包（本地覆盖：local_components/espressif__esp32_p4_function_ev_board）
+  espressif/esp32_p4_function_ev_board:
+    version: "^5.0.3"
+    rules:
+      - if: target in [esp32p4]
+
+  espressif/esp_lcd_jd9165: "*"
+  espressif/esp_lcd_touch_gt911: "^1"
+  espressif/esp_codec_dev: "~1.5.6"
+
+  # esp_video 必须 >=2.5.0：2.0.1 的 ISP 管线在 OV02C10 + P4 上会不停刷
+  # "ISP: fifo overflow" 直到中断看门狗复位，官方 video_lcd_display 用的就是 2.5.0。
+  # 传感器驱动继续用 local_components 里的本地 esp_cam_sensor 2.1.0（与官方 demo 一致）。
+  espressif/esp_video: "~2.5.0"
+
+  # 无线：P4 无射频，Wi-Fi/BLE 由板载 ESP32-C6 通过 SDIO 提供
+  espressif/esp_hosted: "2.11.7"
+  espressif/esp_wifi_remote: "*"
