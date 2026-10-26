@@ -20,3 +20,7 @@ idf_build_set_property(MINIMAL_BUILD ON)
 
 set(PROJECT_VER "1.1.0")
 project(p4_template)
+
+# 小智聊天字体 + 唤醒词模型，放到现有 4 MB storage SPIFFS（/spiffs）。
+# idf.py flash 会连同 app 一起写；idf.py app-flash 不会更新资源。
+spiffs_create_partition_image(storage assets/ai FLASH_IN_PROJECT)

@@ -17,6 +17,7 @@ static const char *TAG = "settings";
 #define KEY_VOLUME      "vol"
 #define KEY_LANG        "lang"
 #define KEY_SCREEN_OFF  "soff"
+#define KEY_DEMO        "demo"
 
 #define DEF_BRIGHTNESS  80
 #define DEF_VOLUME      70
@@ -27,6 +28,7 @@ static sys_settings_t s_cfg = {
     .brightness = DEF_BRIGHTNESS,
     .volume = DEF_VOLUME,
     .lang = DEF_LANG,
+    .demo = 0,
     .screen_off_s = DEF_SCREEN_OFF,
 };
 
@@ -140,13 +142,14 @@ esp_err_t settings_init(void)
     s_cfg.brightness = clamp_brightness(read_u8(h, KEY_BRIGHTNESS, DEF_BRIGHTNESS));
     s_cfg.volume = clamp_volume(read_u8(h, KEY_VOLUME, DEF_VOLUME));
     s_cfg.lang = clamp_lang(read_u8(h, KEY_LANG, DEF_LANG));
+    s_cfg.demo = read_u8(h, KEY_DEMO, 0) ? 1 : 0;
     s_cfg.screen_off_s = clamp_screen_off(read_u16(h, KEY_SCREEN_OFF, DEF_SCREEN_OFF));
     nvs_close(h);
 
     i18n_set_lang((i18n_lang_t)s_cfg.lang);
 
-    ESP_LOGI(TAG, "loaded: brightness=%u volume=%u lang=%u screen_off=%us",
-             s_cfg.brightness, s_cfg.volume, s_cfg.lang, s_cfg.screen_off_s);
+    ESP_LOGI(TAG, "loaded: brightness=%u volume=%u lang=%u demo=%u screen_off=%us",
+             s_cfg.brightness, s_cfg.volume, s_cfg.lang, s_cfg.demo, s_cfg.screen_off_s);
     return ESP_OK;
 }
 
@@ -215,6 +218,16 @@ void settings_set_screen_off(int seconds)
     }
     s_cfg.screen_off_s = v;
     write_u16(KEY_SCREEN_OFF, v);
+}
+
+void settings_set_demo(bool on)
+{
+    uint8_t v = on ? 1 : 0;
+    if (v == s_cfg.demo) {
+        return;
+    }
+    s_cfg.demo = v;
+    write_u8(KEY_DEMO, v);
 }
 
 void settings_factory_reset(void)

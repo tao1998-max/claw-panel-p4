@@ -95,12 +95,18 @@ LV_FONT_DECLARE(font_zh_16);
 LV_FONT_DECLARE(font_zh_20);
 LV_FONT_DECLARE(font_zh_28);
 LV_FONT_DECLARE(font_net_30);
+LV_FONT_DECLARE(font_robot_30);
 
 #define UI_FONT_SMALL        (&font_zh_16)
 #define UI_FONT_BODY         (&font_zh_20)
 #define UI_FONT_TITLE        (&font_zh_28)
 /* Material Design Icons 子集：wifi-strength-1..4 + ethernet，24px 视觉大小 */
 #define UI_FONT_NET          (&font_net_30)
+/* Material Design Icons 子集：robot / robot-happy / robot-excited */
+#define UI_FONT_ROBOT        (&font_robot_30)
+#define UI_ICON_ROBOT        "\xF3\xB0\x9A\xA9"
+#define UI_ICON_ROBOT_HAPPY  "\xF3\xB1\x9C\x99"
+#define UI_ICON_ROBOT_EXCITED "\xF3\xB1\x9A\xA3"
 /* 图标/符号必须用内置 Montserrat：中文字库是子集，没有 LV_SYMBOL_* 字形，
  * 用中文字体画符号会变成方框。 */
 #define UI_FONT_ICON         (&lv_font_montserrat_20)

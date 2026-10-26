@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
 
@@ -20,6 +21,7 @@ typedef struct {
     uint8_t  brightness;    /* 10-100 */
     uint8_t  volume;        /* 0-100 */
     uint8_t  lang;          /* i18n_lang_t */
+    uint8_t  demo;          /* 主页示例开关，MCP 可控制 */
     uint16_t screen_off_s;  /* 0=常亮，或 30/60/300 秒 */
 } sys_settings_t;
 
@@ -42,6 +44,9 @@ void settings_preview_volume(int percent);
 void settings_set_lang(int lang);
 
 void settings_set_screen_off(int seconds);
+
+/* 主页示例开关：供 UI 和 MCP 工具共用，只存盘 */
+void settings_set_demo(bool on);
 
 /* 擦除 NVS 并重启 */
 void settings_factory_reset(void);

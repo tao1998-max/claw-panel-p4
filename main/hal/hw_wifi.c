@@ -9,7 +9,6 @@
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "esp_wifi.h"
-#include "esp_sntp.h"
 
 static const char *TAG = "hw.wifi";
 
@@ -21,7 +20,6 @@ static char s_ip[16];
 static bool s_scan_running;
 static int s_scan_count;
 static hw_wifi_ap_t s_aps[HW_WIFI_AP_MAX];
-static bool s_sntp_started;
 
 static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -89,13 +87,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
                  "IP " IPSTR, IP2STR(&ev->ip_info.ip));
 
         /* 历史曲线横轴要显示日期时间；板子没有 RTC，联网后校时一次。 */
-        if (!s_sntp_started) {
-            s_sntp_started = true;
-            esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
-            esp_sntp_setservername(0, "cn.pool.ntp.org");
-            esp_sntp_init();
-            ESP_LOGI(TAG, "SNTP started");
-        }
+        hw_sntp_start_once();
     }
 }
 

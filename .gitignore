@@ -3,6 +3,7 @@ build/
 dependencies.lock
 sdkconfig.old
 *.log
+__pycache__/
 
 # 组件管理器自动下载的依赖（由 main/idf_component.yml + local_components 还原）
 managed_components/

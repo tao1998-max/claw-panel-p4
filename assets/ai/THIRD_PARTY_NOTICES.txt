@@ -1,0 +1,21 @@
+XiaoZhi AI assets
+=================
+
+- XiaoZhi-ESP32 client code (vendored, MIT):
+  Copyright (c) 2025 Shenzhen Xinzhi Future Technology Co., Ltd.
+  and Project Contributors. See main/ai/vendor/LICENSE.xiaozhi.
+
+- Wake word model (wn9_nihaoxiaozhi_tts) comes from espressif/esp-sr 2.3.1.
+  ESP-SR is distributed under the Espressif MIT License; use is limited to
+  Espressif products. "你好小智" / "XiaoZhi" brand rights belong to their owners.
+
+- Chat font font_puhui_common_20_4.bin comes from 78/xiaozhi-fonts 1.6.0
+  (MIT component). The underlying Puhui/Noto glyph data may carry separate
+  font terms; verify before commercial redistribution.
+
+- Prompt OGG sounds (popup/success/activation/exclamation) come from the
+  XiaoZhi-ESP32 assets (MIT).
+- 78/esp-ml307 is Apache-2.0.
+- esp_audio_codec / esp_audio_effects are Espressif Modified MIT, restricted
+  to Espressif products.
+- Material Design Icons (robot glyphs) are Apache-2.0, Pictogrammers.

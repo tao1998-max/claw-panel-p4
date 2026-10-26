@@ -7,11 +7,34 @@ idf_component_register(
         "hal/hw_status.c"
         "hal/hw_display.c"
         "hal/hw_audio.c"
+        "hal/hw_time.c"
         "hal/hw_storage.c"
         "hal/hw_rs485.c"
         "hal/hw_eth.c"
         "hal/hw_camera.c"
         "hal/hw_wifi.c"
+        "ai/ai_api.cc"
+        "ai/ai_api_stub.c"
+        "ai/ai_app.cc"
+        "ai/ai_audio.cc"
+        "ai/ai_assets.c"
+        "ai/ai_net.cc"
+        "ai/ai_ota.cc"
+        "ai/ai_settings.c"
+        "ai/ai_system_info.c"
+        "ai/ai_ui.cc"
+        "ai/vendor/nvs_settings.cc"
+        "ai/vendor/protocols/protocol.cc"
+        "ai/vendor/protocols/websocket_protocol.cc"
+        "ai/vendor/audio/audio_codec.cc"
+        "ai/vendor/audio/audio_service.cc"
+        "ai/vendor/audio/demuxer/ogg_demuxer.cc"
+        "ai/vendor/audio/codecs/es8311_audio_codec.cc"
+        "ai/vendor/audio/processors/afe_audio_processor.cc"
+        "ai/vendor/audio/processors/no_audio_processor.cc"
+        "ai/vendor/audio/wake_words/afe_wake_word.cc"
+        "ai/vendor/cbin/cbin_font.c"
+        "ai/vendor/mcp/mcp_server.cc"
         "ui/ui.c"
         "ui/ui_widgets.c"
         "ui/ui_shell.c"
@@ -23,12 +46,20 @@ idf_component_register(
         "ui/fonts/font_zh_20.c"
         "ui/fonts/font_zh_28.c"
         "ui/fonts/font_net_30.c"
+        "ui/fonts/font_robot_30.c"
     INCLUDE_DIRS
         "app"
         "core"
         "hal"
         "ui"
         "ui/pages"
+        "ai"
+        "ai/vendor"
+        "ai/vendor/audio"
+        "ai/vendor/audio/codecs"
+        "ai/vendor/protocols"
+        "ai/vendor/cbin"
+        "ai/vendor/mcp"
     REQUIRES
         espressif__esp32_p4_function_ev_board
         espressif__esp_video
@@ -39,6 +70,19 @@ idf_component_register(
         esp_event
         esp_netif
         esp_app_format
+        esp_psram
+        esp_driver_i2s
+        esp_driver_i2c
+        esp_partition
+        spi_flash
+        efuse
+        json
+        spiffs
+        espressif__esp_codec_dev
+        espressif__esp_audio_codec
+        espressif__esp_audio_effects
+        espressif__esp-sr
+        78__esp-ml307
         lwip
         nvs_flash
 )

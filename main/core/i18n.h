@@ -131,6 +131,50 @@ typedef enum {
     STR_HISTORY_RANGE_START,/* 起始 */
     STR_HISTORY_RANGE_END,  /* 结束 */
 
+    /* 小智 AI */
+    STR_GROUP_AI,           /* AI 助手 */
+    STR_SET_SUB_AI,         /* 小智语音与对话 */
+    STR_AI_TITLE,           /* 小智助手 */
+    STR_AI_STATUS,          /* 状态 */
+    STR_AI_ENABLE,          /* 启用 */
+    STR_AI_SERVER,          /* 服务地址 */
+    STR_AI_DEVICE_ID,       /* 设备 ID */
+    STR_AI_ACTIVATION,      /* 激活 */
+    STR_AI_REACTIVATE,      /* 重新激活 */
+    STR_AI_WAKE,            /* 离线唤醒词 */
+    STR_AI_WAKE_SPEAKING,   /* 回答时检测唤醒词 */
+    STR_AI_MUTE,            /* 麦克风静音 */
+    STR_AI_CHAT_HINT,       /* 免提提示 */
+    STR_AI_START,           /* 开始对话 */
+    STR_AI_STOP,            /* 结束对话 */
+    STR_AI_RETRY,           /* 重试 */
+    STR_AI_CLOSE,           /* 关闭 */
+    STR_AI_ST_STARTING,     /* 启动中 */
+    STR_AI_ST_ACTIVATING,   /* 激活中 */
+    STR_AI_ST_IDLE,         /* 待命 */
+    STR_AI_ST_CONNECTING,   /* 连接中 */
+    STR_AI_ST_LISTENING,    /* 聆听中 */
+    STR_AI_ST_SPEAKING,     /* 回答中 */
+    STR_AI_ST_ERROR,        /* 出错 */
+    STR_AI_ST_DISABLED,     /* 已停用 */
+    STR_AI_OFFLINE,         /* 未联网 */
+    STR_AI_ACTIVATION_HINT, /* 绑定提示 */
+    STR_AI_NO_ACTIVATION,   /* 尚未激活 */
+    STR_AI_MUTED,           /* 麦克风已静音 */
+    STR_AI_WAKE_HINT,       /* 唤醒提示 */
+    STR_AI_SERVER_HINT,     /* 留空使用官方 OTA */
+    STR_AI_REACTIVATE_CONFIRM,
+    STR_AI_URL_INVALID,
+    STR_AI_SETTINGS_NOTE,
+    STR_AI_DEVICE_HINT,
+    STR_AI_REBOOT_HINT,
+    STR_AI_ACTIVATED,
+    STR_HOME_DEMO_TITLE,
+    STR_HOME_DEMO_SUB,
+    STR_HOME_DEMO_SWITCH,
+    STR_HOME_DEMO_ON,
+    STR_HOME_DEMO_OFF,
+
     STR_COUNT
 } i18n_id_t;
 

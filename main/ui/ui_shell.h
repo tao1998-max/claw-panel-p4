@@ -22,6 +22,12 @@ void ui_shell_refresh_chrome(void);
 
 const ui_page_t *ui_shell_current(void);
 
+/* 息屏状态下由 AI 唤醒词/激活码调用：开背光、删遮罩。 */
+void ui_shell_wake(void);
+
+/* 刷新 LVGL 活动计时，避免对话中息屏。 */
+void ui_shell_note_activity(void);
+
 #ifdef __cplusplus
 }
 #endif

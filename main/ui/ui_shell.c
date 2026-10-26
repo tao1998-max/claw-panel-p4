@@ -9,6 +9,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 
+#include "ai_ui.h"
 #include "hw.h"
 #include "settings.h"
 #include "ui_widgets.h"
@@ -405,15 +406,26 @@ static void nav_clicked(lv_event_t *e)
 
 /* ---------------- 息屏 ---------------- */
 
-static void wake_up(lv_event_t *e)
+void ui_shell_wake(void)
 {
-    (void)e;
     hw_display_set_backlight(true);
     if (s_off_overlay != NULL) {
         lv_obj_delete(s_off_overlay);
         s_off_overlay = NULL;
+        ESP_LOGI(TAG, "wake up from screen off");
     }
-    ESP_LOGI(TAG, "wake up from screen off");
+    lv_display_trigger_activity(NULL);
+}
+
+void ui_shell_note_activity(void)
+{
+    lv_display_trigger_activity(NULL);
+}
+
+static void wake_up(lv_event_t *e)
+{
+    (void)e;
+    ui_shell_wake();
 }
 
 static void idle_timer_cb(lv_timer_t *timer)
@@ -421,6 +433,10 @@ static void idle_timer_cb(lv_timer_t *timer)
     (void)timer;
     const sys_settings_t *cfg = settings_get();
     if (cfg->screen_off_s == 0 || s_off_overlay != NULL || s_root == NULL) {
+        return;
+    }
+    if (ai_ui_is_busy()) {
+        lv_display_trigger_activity(NULL);
         return;
     }
     if (lv_display_get_inactive_time(NULL) < (uint32_t)cfg->screen_off_s * 1000U) {
@@ -725,6 +741,7 @@ static void shell_build(void)
     header_build();
     content_build();
     nav_build();
+    ai_ui_attach(s_root);
 
     if (s_idle_timer == NULL) {
         s_idle_timer = lv_timer_create(idle_timer_cb, 1000, NULL);
@@ -829,6 +846,7 @@ void ui_shell_rebuild(void)
 {
     const ui_page_t *keep = s_current;
 
+    ai_ui_detach();
     if (s_off_overlay != NULL) {
         lv_obj_delete(s_off_overlay);
         s_off_overlay = NULL;

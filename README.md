@@ -9,7 +9,7 @@ ESP32-P4 + ESP32-C6，7 寸 1024×600 IPS 电容触摸屏的**基础模板工程
 |---|---|---|---|
 | 显示 | JD9165 MIPI-DSI 1024×600 | DSI 2-lane，背光 GPIO23 | BSP |
 | 触摸 | GT911（I2C） | SDA7 / SCL8 | BSP |
-| 音频 | ES8311 + 功放 | MCLK13/BCLK12/WS10/DOUT9/DIN48/PA11 | BSP |
+| 音频 | ES8311 + 功放 | MCLK13/BCLK12/WS10/DOUT9/DIN48/PA11 | BSP；小智模式 16 kHz 单声道双工 |
 | SD 卡 | SDMMC 4-bit | CLK43/CMD44/D0-D3 39-42 | BSP |
 | 摄像头 | **OV02C10** MIPI-CSI 1920×1080 RAW10 → ISP → RGB565 | DSI 2-lane，SCCB 复用 SDA7/SCL8 | esp_video 2.5.0 + 本地 esp_cam_sensor 2.1.0 |
 | RS485 | UART1 | TX26 / RX27 | 本工程 |
@@ -28,14 +28,19 @@ p4_template/
 ├── local_components/            ★随工程分发的本地组件
 │   ├── espressif__esp32_p4_function_ev_board/
 │   └── espressif__esp_cam_sensor/  厂商 2.1.0，含 OV02C10 驱动
+├── assets/                      ★小智 AI 资源（随工程提交）
+│   ├── ai_src/                  字体源文件 + 归属说明
+│   └── ai/                      生成的 SPIFFS：聊天字体 + srmodels.bin
 ├── tools/fonts/                 ← 字库生成工具（改文案必跑）
 │   ├── collect_chars.py         扫 i18n.c 生成 charset.txt
 │   ├── gen_fonts.ps1            调 lv_font_conv 出 16/20/28 三档
 │   ├── gen_net_font.ps1         从 MDI TTF 生成网络图标 font_net_30.c
+│   ├── gen_robot_font.ps1       从 MDI TTF 生成机器人图标 font_robot_30.c
 │   ├── charset.txt              当前字库覆盖的字符集
 │   └── mdi/                     Material Design Icons TTF + 许可证
 │       ├── materialdesignicons-webfont.ttf
 │       └── LICENSE
+├── tools/ai_assets/             build_assets.py：打包字体 + 唤醒词模型
 └── main/
     ├── app/                     启动编排：NVS → settings → 显示 → UI → 外设
     │   ├── app_main.c
@@ -48,12 +53,22 @@ p4_template/
     │   ├── hw.h                 引脚表、模块状态、统一 API
     │   ├── hw_status.c          g_hw 唯一定义与模块名称
     │   ├── hw_display.c         显示 + 触摸 + 背光/息屏
-    │   ├── hw_audio.c           ES8311 播放/录音
+    │   ├── hw_audio.c           ES8311 播放/录音（AI 开启时转发 16 kHz）
     │   ├── hw_storage.c         SD 卡挂载与容量
     │   ├── hw_rs485.c           RS485 收发（默认回环）
     │   ├── hw_eth.c             IP101 以太网 + DHCP
     │   ├── hw_camera.c          MIPI-CSI 自检取帧
     │   └── hw_wifi.c            C6 Wi-Fi：连接 + 扫描 + 断开 + SNTP 校时
+    ├── ai/                      ★小智 AI（可剪裁）
+    │   ├── ai_app.cc            半双工状态机 / WebSocket 会话
+    │   ├── ai_ota.cc            官方激活/check-version，不含固件升级
+    │   ├── ai_audio.cc          16 kHz ES8311 双工
+    │   ├── ai_ui.cc             悬浮机器人 + 聊天对话框
+    │   ├── ai_assets.c          SPIFFS 字体/唤醒词模型
+    │   ├── ai_settings.c        NVS 命名空间 ai
+    │   ├── ai_net.cc            EspNetwork / IP 事件 / SNTP
+    │   ├── ai_system_info.c     P4 基片 MAC / UUID / OTA JSON
+    │   └── vendor/              从 XiaoZhi v2.2.6 裁剪的协议/音频源码
     ├── ui/                      界面层
     │   ├── ui.c,h               对外只有 ui_init() / ui_rebuild()
     │   ├── ui_theme.h           颜色/间距/尺寸/字体令牌
@@ -64,8 +79,8 @@ p4_template/
     │   │   ├── page_home.c      占位页（暂时留空，仅一行提示）
     │   │   ├── page_sysinfo.c   设备状态（KPI + 模块网格）
     │   │   ├── page_history.c   历史曲线（日期时间轴 + 游标/缩放 + 刻度平移 + 区段查找）
-    │   │   └── page_settings.c  设置（分类栏 + 详情卡 + Wi-Fi）
-    │   └── fonts/               font_zh_{16,20,28}.c + font_net_30.c（自生成，勿手改）
+    │   │   └── page_settings.c  设置（分类栏 + 详情卡 + Wi-Fi + AI 助手）
+    │   └── fonts/               font_zh_{16,20,28}.c + font_net_30.c + font_robot_30.c（自生成，勿手改）
     └── Kconfig.projbuild        menuconfig 开关
 ```
 
@@ -89,8 +104,9 @@ p4_template/
 - 顶栏 64 px：左侧品牌标 + 页面标题，右侧 20px 运行时长与同一套 Material Design Icons 网络图标（`wifi-strength-1..4` / `ethernet`，可同时显示，按 RSSI 切换 Wi-Fi 级别，离线灰，每 1 s 刷新，不显示文字）。
 - 底栏 68 px：选中项 = 顶部 3 px 强调条 + 半透明渐变胶囊 + 亮色图标/文字；强调条在 tab 间平滑滑动，胶囊底淡入淡出。
 - 页面首次进入时创建，之后切页只做 hide/show；语言切换才整体销毁重建。开 `CONFIG_TEMPLATE_UI_SELFTEST=y` 跑过 200+ 次切换，三个页面的 heap 数值每轮完全一致（无泄漏）。
+- 小智 AI：所有页面右下角悬浮机器人（底栏上方，自绘面罩/眼睛/嘴巴，不依赖图标字体），点击/唤醒词打开 460×370 悬浮气泡（贴着机器人、带小尾巴，点气泡外任意位置关闭）；气泡有状态 chip、消息气泡、静音、结束对话；激活时自动弹层显示 6 位码并点亮屏幕。语音唤醒自动打开的气泡会在回答结束 5 秒后自动收起，但**不结束会话**；若气泡是自动收起的，之后有新的用户语音/小智回答（包括音乐、歌词）会自动重新弹出。用户手动关闭（点气泡外、关闭按钮或再点机器人）后，会话继续，但新信息只在机器人上方显示 320×54 小气泡，文字超宽时横向循环滚动，8 秒无新信息自动消失；点小气泡可重新打开完整对话。点机器人手动打开的气泡不会自动收。会话结束仍按原来的服务端/超时逻辑。半双工：TTS 播放时麦克风上行暂停，保留唤醒词/点击打断；唤醒/激活/成功/错误使用 XiaoZhi 原版 OGG 提示音。
 - 四个页面共用同一套设计令牌（`ui_theme.h`）和控件（`ui_widgets.c`）：
-  - 主页：暂时留空，只保留一行「业务页面在 ui/pages/ 下添加」的提示；
+  - 主页：居中演示卡片，一个「演示开关」；状态存 NVS，可被 MCP 工具 `self.home.turn_on` / `self.home.turn_off` 控制，UI 500 ms 同步；
   - 设备状态：四张 KPI 卡（带进度条）+ 八模块状态网格；
   - 历史曲线：单窗口 XY 曲线，下拉框切换温度 / 压力；X 轴显示日期时间，窗口长度可点胶囊中间数值输入（时/分/秒，不设实际最大值）或用 +/- / 双指捏合缩放；显示区内单指只做游标读数，底部 X 刻度左右拖平移时间、左侧 Y 刻度上下拖平移数值；右上角“区段查找”弹窗直接在日历上点起点/终点（靛蓝/紫罗兰两种颜色），再选起止时分，确认后曲线跳到该区段；
   - 设置：272 px 分类栏 + 688 px 详情卡，详情按分类切换并从下方轻轻托起。
@@ -115,7 +131,7 @@ p4_template/
 
 ## 中文与字体
 
-- 字库由 `deng.ttf`（等线）子集化生成，只含 `charset.txt` 里的字符 + ASCII；当前 charset 170 个字符，三档 `.c` 源文件合计约 **810 KB**。
+- 字库由 `deng.ttf`（等线）子集化生成，只含 `charset.txt` 里的字符 + ASCII；当前 charset 238 个字符，三档 `.c` 源文件合计约 **1.05 MB**。
 - 网络图标用 `tools/fonts/mdi/materialdesignicons-webfont.ttf` 子集生成 `font_net_30.c`（`wifi-strength-1..4` + `ethernet`，Material Design Icons / Pictogrammers，Apache-2.0），重新生成：`tools/fonts/gen_net_font.ps1`。其余符号仍用 LVGL 内置 Montserrat 的 `LV_SYMBOL_*`；**符号必须配 `UI_FONT_ICON*` 或 `UI_FONT_NET`**。
 - 改了 `i18n.c` 却没重跑字库 = 新汉字变方框。固定两步：
   ```powershell
@@ -136,7 +152,11 @@ NVS namespace `sys`，键 `bright / vol / lang / soff`。
 | 扬声器音量 | 0–100 % | 拖动即时生效，松手落盘 |
 | 语言 | 中文 / English | 整屏重建 |
 | Wi-Fi | 扫描 → 选 AP → 输入密码 → 连接 / 断开 | 立即连接，凭据由 esp_wifi 存 NVS |
-| 恢复出厂设置 | — | 擦 NVS 并重启 |
+| 小智 AI | 启用 / 服务地址 / 唤醒词 / 麦克风静音 / 重新激活 | 配置存 NVS `ai`，启用/地址/唤醒词重启生效；静音即时 |
+| 恢复出厂设置 | — | 擦 NVS（含小智激活/配置）并重启 |
+
+> 小智 AI 的聊天字体、唤醒词模型在 4 MB `storage` SPIFFS（`/spiffs`），
+> 由 `idf.py flash` 一起写入；只执行 `idf.py app-flash` 不会更新它们。
 
 ## 上电自检（实机验证）
 
@@ -146,7 +166,7 @@ NVS namespace `sys`，键 `bright / vol / lang / soff`。
 |---|---|---|
 | 显示 | OK | `1024x600 JD9165`，`Display initialized`，背光 80% |
 | 触摸 | OK | `GT911 TouchPad_ID:0x39,0x31,0x31` |
-| 音频 | OK | `ES8311 Work in Slave mode` ×2（播放+录音），44.1kHz/16bit |
+| 音频 | OK | `ES8311 Work in Slave mode`，AI 模式 16 kHz/16bit 双工；关闭 AI 时 44.1 kHz |
 | SD 卡 | FAIL（未插卡） | `sdmmc_init_ocr ... 0x107` → `ESP_ERR_TIMEOUT` |
 | RS485 | OK | `rs485 ready: TX=26 RX=27 @115200` |
 | 以太网 | OK（未插网线） | `ip101 started (mdc=31 mdio=52 rst=51)`，等待 link |
@@ -208,8 +228,9 @@ idf.py build
 idf.py -p COM27 flash monitor
 ```
 
-构建产物：`p4_template.bin` 约 **1.68 MB**（`0x1AE960`），5.9375 MB OTA app 分区剩余约 72%；
-全量编译约 6 分钟（ccache 命中时增量编译十几秒）。
+构建产物（小智开启）：`p4_template.bin` 约 **3.0 MB**（`0x30B570`），5.9375 MB OTA app 分区剩余约 49%；
+SPIFFS 资源约 1.53 MB。关闭 `CONFIG_TEMPLATE_ENABLE_XIAOZHI` 后回落到约 1.76 MB / 72%。
+全量编译约 6–8 分钟（ccache 命中时增量编译十几秒）。
 
 ### Flash 分区（16 MB）
 
@@ -225,9 +246,9 @@ idf.py -p COM27 flash monitor
 | storage (spiffs) | `0xC00000` | 4 MB | `0x1000000` |
 
 双 OTA 槽已经就位，`otadata` 初始指向 `ota_0`。当前应用还没有接 HTTP/本地 OTA
-下载与升级界面，后续可以基于这组分区直接调用 `esp_ota_*`；`storage` 固定 4 MB，
-代码目前未挂载 SPIFFS，留作以后存日志/配置/升级包。两个 app 槽各 5.9375 MB，
-是为了同时满足 4 MB storage 和用满 16 MB。
+下载与升级界面；小智只做 check-version/激活，**不会**执行服务端下发的固件升级。
+`storage` 固定 4 MB，现挂载为 SPIFFS，存放聊天字体和唤醒词模型（约 1.53 MB）。
+两个 app 槽各 5.9375 MB，是为了同时满足 4 MB storage 和用满 16 MB。
 
 ### 分发与目录自包含
 
@@ -245,11 +266,12 @@ idf.py -p COM27 flash monitor
 Remove-Item -Recurse -Force build
 ```
 
-只打包源码、`local_components/`、`managed_components/`、`sdkconfig.defaults`；对方用
-IDF 5.5.x 重新 `idf.py build` 即可。`dependencies.lock` 里的本地组件路径是当前机器的
+只打包源码、`assets/`、`local_components/`、`managed_components/`、`sdkconfig.defaults`；
+对方用 IDF 5.5.x 重新 `idf.py build` 即可。`dependencies.lock` 里的本地组件路径是当前机器的
 绝对路径，不随包分发；首次构建会按工程内的 `local_components/` 重新生成。中文字库的
 `.c` 已生成，普通构建不需要 Node / lv_font_conv；只有改 `i18n.c` 文案时才需要跑
-`tools/fonts/`。
+`tools/fonts/`。小智的字体/唤醒词资源已生成在 `assets/ai/`，不需要 Python；只有换模型/
+字体时才跑 `tools/ai_assets/build_assets.py`。
 
 ⚠️ **工程必须放在纯英文路径**。中文路径会让 RISC-V gcc 收到乱码参数，报
 `cc1.exe: fatal error: ... No such file or directory`。
@@ -266,6 +288,53 @@ idf.py menuconfig
 - **Wi-Fi**：P4 没有射频，必须靠板载 C6。要求 C6 上的从机固件与 `esp_hosted 2.11.x` 匹配，
   否则日志会刷 `Version mismatch ... RPC timeouts`。厂商提供的 `JC-C6-slave_v2.3.2.bin`
   需要通过 C6 的 UART 烧录口单独烧写。
+
+## 小智 AI 语音助手（半双工）
+
+### 开启与激活
+
+```bash
+idf.py menuconfig
+# P4 Template → 启用小智 AI 语音助手
+idf.py -p COM27 flash monitor
+```
+
+- 首次联网后固件会 POST 官方 OTA（默认 `https://api.tenclass.net/xiaozhi/ota/`），
+  聊天面板会自动弹出 6 位激活码；到 <https://xiaozhi.me> 绑定后自动继续。
+- 已激活的设备重启不会重复弹码。设置 → AI 助手 → 重新激活可清除绑定并重新走流程。
+- 设备 ID 使用 **P4 基片 MAC**；与参考 XiaoZhi 固件使用 C6 STA MAC 不同，换固件需要重新激活。
+- 服务地址可在设置里改为自建 OTA；协议固定 WebSocket v1，默认 16 kHz 上行 / 服务端可选 24 kHz 下行。
+
+### 交互
+
+- 点右下角机器人：打开对话；空闲时自动开始一次聆听。
+- 免提：说“你好小智”唤醒；回答中再说“你好小智”或点机器人可打断。
+- **半双工**：TTS 播放时麦克风上行暂停，不做 AEC；不会把扬声器声音回传给服务器。
+- 音量沿用设置 → 声音；聊天面板的麦克风按钮只控制麦克风静音。
+- AI 可通过 MCP 控制设备：`self.audio_speaker.set_volume`（0–100）、`self.screen.set_brightness`（0–100）、`self.home.turn_on` / `self.home.turn_off`（无参数，主页演示开关），`self.get_device_status` 查询当前音量/亮度/主页开关/网络；语音说“音量调到 60”“屏幕调亮一点”“打开主页开关”即可。
+- 聊天面板关闭不结束会话；点「结束对话」才停止并回到待机。
+
+### 资源与剪裁
+
+- 资源：`assets/ai/font_puhui_common_20_4.bin`（1.24 MB，XiaoZhi cbin 字体）+
+  `assets/ai/srmodels.bin`（约 290 KB，`wn9_nihaoxiaozhi_tts`）；由
+  `python tools/ai_assets/build_assets.py` 生成并随工程提交。
+- `spiffs_create_partition_image(storage assets/ai FLASH_IN_PROJECT)` 会把它们写进
+  4 MB storage；`idf.py flash` 一起烧，`idf.py app-flash` 不更新资源。
+- 总开关：`CONFIG_TEMPLATE_ENABLE_XIAOZHI`。关闭后不启动 AI、不显示机器人和设置分类，
+  固件回到约 1.76 MB；`managed_components` 仍会下载/编译，但链接器会丢弃 AI 代码。
+- 完整移除步骤见 `docs/xiaozhi.md`。字体/模型缺失时降级：仍可点机器人对话，聊天中文字体回退子集字库。
+- 许可证：XiaoZhi MIT、78/esp-ml307 Apache-2.0、esp-sr / esp_audio_codec 的 Espressif
+  许可、puhui 字体来源说明、MDI Apache-2.0，详见 `assets/ai/THIRD_PARTY_NOTICES.txt` 与
+  `main/ai/vendor/LICENSE.xiaozhi`。
+
+### 已知限制
+
+- 无 AEC，不支持任意语音插话；只有唤醒词/点击能打断 TTS。
+- C6 从机固件与 esp_hosted 2.11.7 版本不匹配时，长连接可能出现 RPC 超时；
+  根治需按厂商说明刷 C6 从机固件（见上文 Wi-Fi 说明）。
+- 聊天动态中文缺字/emoji 可能显示方框；字体覆盖常见汉字，不保证全集。
+- `CONFIG_TEMPLATE_XIAOZHI_AUTO_LISTEN` / `AUTO_OPEN_CHAT` 仅用于台架验证，正常固件保持关闭。
 
 ## 二次开发入口
 

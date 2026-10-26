@@ -5,6 +5,7 @@
 #include "nvs_flash.h"
 #include "bsp/esp-bsp.h"
 
+#include "ai.h"
 #include "hw.h"
 #include "settings.h"
 #include "ui.h"
@@ -51,6 +52,10 @@ void app_start(void)
     /* 只读参数，不碰硬件：此时显示和音频都还没初始化 */
     settings_init();
 
+    /* 小智：挂载 SPIFFS、把聊天字体和唤醒词模型读进 PSRAM。
+     * 必须在 ui_init() 之前，ai_ui_init() 要用字体 buffer。 */
+    ai_early_init();
+
     /* 先初始化显示与触摸并创建首屏，其余状态由 LVGL 定时器刷新。 */
     if (hw_display_init() == ESP_OK) {
         bsp_display_lock(0);
@@ -64,6 +69,9 @@ void app_start(void)
 
     /* 外设都起来了，把亮度/音量/语言推到硬件 */
     settings_apply();
+
+    /* AI 任务非阻塞启动：等联网后才激活/连接，不拖慢开机。 */
+    ai_start();
 
     log_hardware_summary();
 }

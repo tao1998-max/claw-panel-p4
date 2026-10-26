@@ -41,6 +41,7 @@ static void got_ip_handler(void *arg, esp_event_base_t base, int32_t id, void *d
     g_hw[HW_ETH].ok = true;
     snprintf(g_hw[HW_ETH].detail, sizeof(g_hw[HW_ETH].detail),
              "IP " IPSTR, IP2STR(&ev->ip_info.ip));
+    hw_sntp_start_once();
 }
 
 esp_err_t hw_eth_init(void)

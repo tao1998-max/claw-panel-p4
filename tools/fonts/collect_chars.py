@@ -22,7 +22,7 @@ OUT = Path(__file__).resolve().parent / "charset.txt"
 EXTRA = "·—…%℃•"
 
 STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
-COMMENT_RE = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
 ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\"}
 
 
@@ -53,10 +53,13 @@ def main() -> int:
     # 注释里的汉字不进字库，先把注释剥掉再扫字符串
     text = COMMENT_RE.sub("", text)
     chars = set()
-    for raw in STRING_RE.findall(text):
-        for ch in unescape(raw):
-            if ord(ch) > 0x7F:
-                chars.add(ch)
+    # 逐行扫描，避免整文件正则在一处引号/转义不平衡时把后续字符串
+    # 错误配对而整段跳过（多行字符串在本项目里不存在）。
+    for line in text.splitlines():
+        for raw in STRING_RE.findall(line):
+            for ch in unescape(raw):
+                if ord(ch) > 0x7F:
+                    chars.add(ch)
     chars.update(EXTRA)
 
     ordered = "".join(sorted(chars))

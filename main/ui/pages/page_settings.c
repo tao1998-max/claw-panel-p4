@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "ai.h"
+#include "esp_system.h"
 #include "hw.h"
 #include "i18n.h"
 #include "settings.h"
@@ -35,20 +37,35 @@ typedef enum {
     CAT_SOUND,
     CAT_NETWORK,
     CAT_SYSTEM,
+#if CONFIG_TEMPLATE_ENABLE_XIAOZHI
+    CAT_AI,
+#endif
     CAT_COUNT
 } category_t;
 
 static const i18n_id_t s_cat_name[CAT_COUNT] = {
     STR_GROUP_DISPLAY, STR_GROUP_SOUND, STR_GROUP_NETWORK, STR_GROUP_SYSTEM,
+#if CONFIG_TEMPLATE_ENABLE_XIAOZHI
+    STR_GROUP_AI,
+#endif
 };
 static const i18n_id_t s_cat_sub[CAT_COUNT] = {
     STR_SET_SUB_DISPLAY, STR_SET_SUB_SOUND, STR_SET_SUB_NETWORK, STR_SET_SUB_SYSTEM,
+#if CONFIG_TEMPLATE_ENABLE_XIAOZHI
+    STR_SET_SUB_AI,
+#endif
 };
 static const char *const s_cat_symbol[CAT_COUNT] = {
     LV_SYMBOL_EYE_OPEN, LV_SYMBOL_VOLUME_MAX, LV_SYMBOL_WIFI, LV_SYMBOL_SETTINGS,
+#if CONFIG_TEMPLATE_ENABLE_XIAOZHI
+    UI_ICON_ROBOT,
+#endif
 };
 static const uint32_t s_cat_color[CAT_COUNT] = {
     UI_COLOR_ACCENT, UI_COLOR_OK, UI_COLOR_CYAN, UI_COLOR_VIOLET,
+#if CONFIG_TEMPLATE_ENABLE_XIAOZHI
+    UI_COLOR_CYAN,
+#endif
 };
 
 static lv_obj_t *s_content;
@@ -76,6 +93,15 @@ static bool s_wifi_last_running;
 static lv_obj_t *s_slider_value;
 static lv_obj_t *s_off_chip_label;
 
+/* 小智 AI 页 */
+static lv_timer_t *s_ai_timer;
+static lv_obj_t *s_ai_status;
+static lv_obj_t *s_ai_activation;
+static lv_obj_t *s_ai_activation_hint;
+static lv_obj_t *s_ai_server_value;
+static lv_obj_t *s_ai_url_scrim;
+static lv_obj_t *s_ai_url_ta;
+
 void factory_click_event(lv_event_t *e);
 void wifi_connect_dialog(const char *ssid);
 static void ap_click(lv_event_t *e);
@@ -95,6 +121,23 @@ static void card_hint(lv_obj_t *card, int y, i18n_id_t id)
                                      UI_COLOR_DISABLED, UI_FONT_SMALL);
     lv_obj_set_width(hint, CARD_INNER_W);
     lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+}
+
+/* 分类图标：AI 分类用 MDI 机器人字形，其余仍是 Montserrat 符号。 */
+static lv_obj_t *category_badge(lv_obj_t *parent, int x, int y, int size, int cat)
+{
+    lv_obj_t *badge = ui_badge_create(parent, x, y, size,
+                                      s_cat_symbol[cat], s_cat_color[cat]);
+#if CONFIG_TEMPLATE_ENABLE_XIAOZHI
+    if (cat == CAT_AI) {
+        lv_obj_t *icon = lv_obj_get_child(badge, 0);
+        if (icon != NULL) {
+            lv_obj_set_style_text_font(icon, UI_FONT_ROBOT, 0);
+            lv_label_set_text(icon, UI_ICON_ROBOT);
+        }
+    }
+#endif
+    return badge;
 }
 
 /* ---------------- 左侧分类栏 ---------------- */
@@ -185,8 +228,7 @@ static void rail_build(lv_obj_t *parent)
         lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(bar, LV_OBJ_FLAG_CLICKABLE);
 
-        ui_badge_create(item, 20, (RAIL_ITEM_H - 32) / 2, 32, s_cat_symbol[i],
-                        s_cat_color[i]);
+        category_badge(item, 20, (RAIL_ITEM_H - 32) / 2, 32, i);
 
         lv_obj_t *label = ui_label_create(item, i18n_str(s_cat_name[i]), 62,
                                           (RAIL_ITEM_H - 20) / 2,
@@ -207,8 +249,7 @@ static void rail_build(lv_obj_t *parent)
 
 static void detail_header_build(void)
 {
-    ui_badge_create(s_detail, UI_PANEL_PAD, 24, 48, s_cat_symbol[s_cat],
-                    s_cat_color[s_cat]);
+    category_badge(s_detail, UI_PANEL_PAD, 24, 48, s_cat);
 
     ui_label_create(s_detail, i18n_str(s_cat_name[s_cat]), 88, 24,
                     UI_COLOR_TEXT, UI_FONT_TITLE);
@@ -591,6 +632,304 @@ static void build_system(lv_obj_t *body)
     lv_obj_add_event_cb(factory, factory_click_event, LV_EVENT_CLICKED, NULL);
 }
 
+/* ---------------- 小智 AI ---------------- */
+
+#if CONFIG_TEMPLATE_ENABLE_XIAOZHI
+
+static const char *ai_state_label(void)
+{
+    switch (ai_get_state()) {
+    case AI_STATE_STARTING:   return i18n_str(STR_AI_ST_STARTING);
+    case AI_STATE_ACTIVATING: return i18n_str(STR_AI_ST_ACTIVATING);
+    case AI_STATE_IDLE:       return i18n_str(STR_AI_ST_IDLE);
+    case AI_STATE_CONNECTING: return i18n_str(STR_AI_ST_CONNECTING);
+    case AI_STATE_LISTENING:  return i18n_str(STR_AI_ST_LISTENING);
+    case AI_STATE_SPEAKING:   return i18n_str(STR_AI_ST_SPEAKING);
+    case AI_STATE_ERROR:      return i18n_str(STR_AI_ST_ERROR);
+    default:                  return i18n_str(STR_AI_ST_DISABLED);
+    }
+}
+
+static uint32_t ai_state_color(void)
+{
+    switch (ai_get_state()) {
+    case AI_STATE_ACTIVATING: return UI_COLOR_WARN;
+    case AI_STATE_LISTENING:  return UI_COLOR_CYAN;
+    case AI_STATE_SPEAKING:   return UI_COLOR_VIOLET;
+    case AI_STATE_CONNECTING: return UI_COLOR_ACCENT_SOFT;
+    case AI_STATE_ERROR:      return UI_COLOR_ERROR;
+    case AI_STATE_DISABLED:   return UI_COLOR_DISABLED;
+    default:                  return UI_COLOR_ACCENT;
+    }
+}
+
+static lv_obj_t *ai_switch_create(lv_obj_t *parent, int x, int y, bool on,
+                                  lv_event_cb_t cb)
+{
+    lv_obj_t *sw = lv_switch_create(parent);
+    lv_obj_set_pos(sw, x, y);
+    lv_obj_set_size(sw, 52, 30);
+    lv_obj_set_style_bg_color(sw, lv_color_hex(UI_COLOR_TILE), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(sw, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(sw, lv_color_hex(UI_COLOR_BORDER), LV_PART_MAIN);
+    lv_obj_set_style_border_width(sw, 1, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sw, lv_color_hex(UI_COLOR_ACCENT),
+                              LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(sw, lv_color_hex(UI_COLOR_TEXT), LV_PART_KNOB);
+    if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(sw, cb, LV_EVENT_VALUE_CHANGED, NULL);
+    return sw;
+}
+
+static void ai_enable_event(lv_event_t *e)
+{
+    bool on = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    ai_set_enabled(on);
+    if (s_ai_status) lv_label_set_text(s_ai_status, i18n_str(STR_AI_REBOOT_HINT));
+}
+
+static void ai_mute_event(lv_event_t *e)
+{
+    bool on = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    ai_set_muted(on);
+}
+
+static void ai_wake_event(lv_event_t *e)
+{
+    bool on = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    ai_set_wake_word_enabled(on);
+    if (s_ai_status) lv_label_set_text(s_ai_status, i18n_str(STR_AI_REBOOT_HINT));
+}
+
+static void ai_url_close(void)
+{
+    if (s_ai_url_scrim != NULL) {
+        lv_obj_delete(s_ai_url_scrim);
+    }
+    s_ai_url_scrim = NULL;
+    s_ai_url_ta = NULL;
+}
+
+static void ai_url_cancel_cb(lv_event_t *e)
+{
+    (void)e;
+    ai_url_close();
+}
+
+static void ai_url_save_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_ai_url_ta == NULL) return;
+    const char *text = lv_textarea_get_text(s_ai_url_ta);
+    if (!ai_set_ota_url(text)) {
+        lv_obj_set_style_border_color(s_ai_url_ta, lv_color_hex(UI_COLOR_ERROR), 0);
+        return;
+    }
+    if (s_ai_server_value != NULL) {
+        lv_label_set_text(s_ai_server_value, ai_get_ota_url());
+    }
+    if (s_ai_status != NULL) {
+        lv_label_set_text(s_ai_status, i18n_str(STR_AI_REBOOT_HINT));
+    }
+    ai_url_close();
+}
+
+static void ai_url_keyboard_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_READY) {
+        ai_url_save_cb(e);
+    } else {
+        ai_url_close();
+    }
+}
+
+static void ai_server_click(lv_event_t *e)
+{
+    (void)e;
+    if (s_ai_url_scrim != NULL) return;
+
+    s_ai_url_scrim = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(s_ai_url_scrim, UI_SCREEN_W, UI_SCREEN_H);
+    lv_obj_set_pos(s_ai_url_scrim, 0, 0);
+    lv_obj_set_style_bg_color(s_ai_url_scrim, lv_color_hex(UI_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(s_ai_url_scrim, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(s_ai_url_scrim, 0, 0);
+    lv_obj_set_style_radius(s_ai_url_scrim, 0, 0);
+    lv_obj_set_style_pad_all(s_ai_url_scrim, 0, 0);
+    lv_obj_remove_flag(s_ai_url_scrim, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_ai_url_scrim, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *box = ui_card_create(s_ai_url_scrim, 0, 0, 760, 420);
+    lv_obj_center(box);
+
+    ui_badge_create(box, 20, 22, 36, LV_SYMBOL_WIFI, UI_COLOR_CYAN);
+    ui_label_create(box, i18n_str(STR_AI_SERVER), 64, 28, UI_COLOR_TEXT, UI_FONT_BODY);
+    ui_label_create(box, i18n_str(STR_AI_SERVER_HINT), 64, 58,
+                    UI_COLOR_DISABLED, UI_FONT_SMALL);
+
+    s_ai_url_ta = lv_textarea_create(box);
+    lv_obj_set_size(s_ai_url_ta, 712, 56);
+    lv_obj_align(s_ai_url_ta, LV_ALIGN_TOP_MID, 0, 86);
+    lv_textarea_set_one_line(s_ai_url_ta, true);
+    lv_textarea_set_text(s_ai_url_ta, ai_get_ota_url());
+    lv_obj_set_style_bg_color(s_ai_url_ta, lv_color_hex(UI_COLOR_TILE), 0);
+    lv_obj_set_style_bg_opa(s_ai_url_ta, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_ai_url_ta, lv_color_hex(UI_COLOR_BORDER), 0);
+    lv_obj_set_style_border_width(s_ai_url_ta, 1, 0);
+    lv_obj_set_style_border_color(s_ai_url_ta, lv_color_hex(UI_COLOR_ACCENT), LV_STATE_FOCUSED);
+    lv_obj_set_style_radius(s_ai_url_ta, UI_RADIUS, 0);
+    lv_obj_set_style_pad_hor(s_ai_url_ta, 16, 0);
+    lv_obj_set_style_pad_ver(s_ai_url_ta, 8, 0);
+    lv_obj_set_style_text_color(s_ai_url_ta, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(s_ai_url_ta, UI_FONT_SMALL, 0);
+
+    lv_obj_t *cancel = ui_button_create(box, i18n_str(STR_BTN_CANCEL), 24, 154, 160, 44, 0);
+    lv_obj_add_event_cb(cancel, ai_url_cancel_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ok = ui_button_create(box, i18n_str(STR_BTN_CONFIRM), 194, 154, 160, 44, 1);
+    lv_obj_add_event_cb(ok, ai_url_save_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *kb = lv_keyboard_create(box);
+    lv_obj_set_size(kb, 712, 190);
+    lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, -16);
+    lv_keyboard_set_textarea(kb, s_ai_url_ta);
+    lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_obj_set_style_bg_color(kb, lv_color_hex(UI_COLOR_SURFACE_HI), 0);
+    lv_obj_set_style_bg_opa(kb, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(kb, 0, 0);
+    lv_obj_set_style_pad_all(kb, 8, 0);
+    lv_obj_set_style_text_font(kb, UI_FONT_ICON, 0);
+    lv_obj_set_style_bg_color(kb, lv_color_hex(UI_COLOR_TILE), LV_PART_ITEMS);
+    lv_obj_set_style_bg_opa(kb, LV_OPA_COVER, LV_PART_ITEMS);
+    lv_obj_set_style_text_color(kb, lv_color_hex(UI_COLOR_TEXT), LV_PART_ITEMS);
+    lv_obj_set_style_border_width(kb, 0, LV_PART_ITEMS);
+    lv_obj_set_style_radius(kb, UI_RADIUS_S, LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(kb, lv_color_hex(UI_COLOR_ACCENT),
+                              LV_PART_ITEMS | LV_STATE_PRESSED);
+    lv_obj_add_event_cb(kb, ai_url_keyboard_cb, LV_EVENT_READY, NULL);
+    lv_obj_add_event_cb(kb, ai_url_keyboard_cb, LV_EVENT_CANCEL, NULL);
+}
+
+static void ai_reactivate_cb(lv_event_t *e)
+{
+    (void)e;
+    ai_clear_activation();
+    esp_restart();
+}
+
+static void ai_reactivate_click(lv_event_t *e)
+{
+    (void)e;
+    ui_confirm_create(lv_screen_active(), i18n_str(STR_AI_REACTIVATE_CONFIRM),
+                      ai_reactivate_cb);
+}
+
+static void ai_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    if (s_cat != CAT_AI || s_body == NULL || !lv_obj_is_visible(s_body)) return;
+
+    if (s_ai_status != NULL) {
+        const char *err = ai_get_error();
+        const char *text = (ai_get_state() == AI_STATE_ERROR && err[0] != '\0')
+                               ? err : ai_state_label();
+        lv_label_set_text(s_ai_status, text);
+        ui_label_set_text_color(s_ai_status, ai_state_color());
+    }
+
+    const char *code = ai_get_activation_code();
+    bool activated = ai_is_activated();
+    const char *act_text = i18n_str(STR_AI_NO_ACTIVATION);
+    uint32_t act_color = UI_COLOR_DISABLED;
+    const char *act_hint = i18n_str(STR_AI_NO_ACTIVATION);
+    if (code[0] != '\0') {
+        act_text = code;
+        act_color = UI_COLOR_TEXT;
+        act_hint = i18n_str(STR_AI_ACTIVATION_HINT);
+    } else if (activated) {
+        act_text = i18n_str(STR_AI_ACTIVATED);
+        act_color = UI_COLOR_OK;
+        act_hint = i18n_str(STR_AI_WAKE_HINT);
+    }
+    if (s_ai_activation != NULL) {
+        lv_label_set_text(s_ai_activation, act_text);
+        ui_label_set_text_color(s_ai_activation, act_color);
+    }
+    if (s_ai_activation_hint != NULL) {
+        lv_label_set_text(s_ai_activation_hint, act_hint);
+    }
+}
+
+static void build_ai(lv_obj_t *body)
+{
+    lv_obj_add_flag(body, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(body, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_pad_bottom(body, 16, 0);
+
+    lv_obj_t *card = ui_card_create(body, 0, 0, INNER_W, 150);
+    card_title(card, STR_AI_ENABLE);
+    ai_switch_create(card, INNER_W - 76, 12, ai_enabled(), ai_enable_event);
+    s_ai_status = ui_label_create(card, ai_state_label(), CARD_PAD, 48,
+                                  ai_state_color(), UI_FONT_BODY);
+    lv_obj_set_width(s_ai_status, 480);
+    lv_label_set_long_mode(s_ai_status, LV_LABEL_LONG_DOT);
+
+    ui_label_create(card, i18n_str(STR_AI_MUTE), CARD_PAD, 84,
+                    UI_COLOR_MUTED, UI_FONT_SMALL);
+    ai_switch_create(card, INNER_W - 76, 78, ai_is_muted(), ai_mute_event);
+
+    lv_obj_t *note = ui_label_create(card, i18n_str(STR_AI_SETTINGS_NOTE),
+                                     CARD_PAD, 116, UI_COLOR_DISABLED, UI_FONT_SMALL);
+    lv_obj_set_width(note, CARD_INNER_W);
+    lv_label_set_long_mode(note, LV_LABEL_LONG_DOT);
+
+    lv_obj_t *server = ui_card_create(body, 0, 160, INNER_W, 130);
+    card_title(server, STR_AI_SERVER);
+    ui_menu_row_create(server, CARD_PAD, 48, CARD_INNER_W, 48,
+                       LV_SYMBOL_SETTINGS, i18n_str(STR_AI_SERVER),
+                       ai_get_ota_url(), &s_ai_server_value, ai_server_click, NULL);
+
+    char id[64];
+    snprintf(id, sizeof(id), "%s  %s", i18n_str(STR_AI_DEVICE_ID), ai_get_device_id());
+    lv_obj_t *dev = ui_label_create(server, id, CARD_PAD, 104,
+                                    UI_COLOR_DISABLED, UI_FONT_SMALL);
+    lv_obj_set_width(dev, CARD_INNER_W);
+    lv_label_set_long_mode(dev, LV_LABEL_LONG_DOT);
+
+    lv_obj_t *act = ui_card_create(body, 0, 300, INNER_W, 140);
+    card_title(act, STR_AI_ACTIVATION);
+    const char *init_code = ai_get_activation_code();
+    const char *init_text = init_code[0] ? init_code :
+                            (ai_is_activated() ? i18n_str(STR_AI_ACTIVATED) : "—");
+    uint32_t init_color = init_code[0] ? UI_COLOR_TEXT :
+                          (ai_is_activated() ? UI_COLOR_OK : UI_COLOR_DISABLED);
+    s_ai_activation = ui_label_create(act, init_text, CARD_PAD, 50, init_color, UI_FONT_TITLE);
+    lv_obj_set_width(s_ai_activation, 300);
+    s_ai_activation_hint = ui_label_create(act, "",
+                                           CARD_PAD, 94, UI_COLOR_DISABLED, UI_FONT_SMALL);
+    lv_obj_set_width(s_ai_activation_hint, 400);
+    lv_label_set_long_mode(s_ai_activation_hint, LV_LABEL_LONG_DOT);
+
+    lv_obj_t *re = ui_button_create(act, i18n_str(STR_AI_REACTIVATE),
+                                    INNER_W - 190, 48, 170, 44, 0);
+    lv_obj_add_event_cb(re, ai_reactivate_click, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *wake = ui_card_create(body, 0, 450, INNER_W, 130);
+    card_title(wake, STR_AI_WAKE);
+    ui_label_create(wake, i18n_str(STR_AI_WAKE), CARD_PAD, 54,
+                    UI_COLOR_MUTED, UI_FONT_SMALL);
+    ai_switch_create(wake, INNER_W - 76, 46, ai_wake_word_enabled(), ai_wake_event);
+
+    lv_obj_t *hint = ui_label_create(wake, i18n_str(STR_AI_REBOOT_HINT),
+                                     CARD_PAD, 94, UI_COLOR_DISABLED, UI_FONT_SMALL);
+    lv_obj_set_width(hint, CARD_INNER_W);
+
+    s_ai_timer = lv_timer_create(ai_timer_cb, 500, NULL);
+    ai_timer_cb(NULL);
+}
+
+#endif /* CONFIG_TEMPLATE_ENABLE_XIAOZHI */
+
 /* ---------------- 详情容器 ---------------- */
 
 static void build_detail(void)
@@ -614,6 +953,17 @@ static void build_detail(void)
         lv_timer_delete(s_timer);
         s_timer = NULL;
     }
+#if CONFIG_TEMPLATE_ENABLE_XIAOZHI
+    ai_url_close();
+    if (s_ai_timer != NULL) {
+        lv_timer_delete(s_ai_timer);
+        s_ai_timer = NULL;
+    }
+    s_ai_status = NULL;
+    s_ai_activation = NULL;
+    s_ai_activation_hint = NULL;
+    s_ai_server_value = NULL;
+#endif
 
     detail_header_build();
 
@@ -630,6 +980,9 @@ static void build_detail(void)
     case CAT_SOUND:   build_sound(s_body); break;
     case CAT_NETWORK: build_network(s_body); break;
     case CAT_SYSTEM:  build_system(s_body); break;
+#if CONFIG_TEMPLATE_ENABLE_XIAOZHI
+    case CAT_AI:      build_ai(s_body); break;
+#endif
     default: break;
     }
 
@@ -796,6 +1149,13 @@ static void settings_destroy(void)
         lv_timer_delete(s_timer);
         s_timer = NULL;
     }
+#if CONFIG_TEMPLATE_ENABLE_XIAOZHI
+    if (s_ai_timer != NULL) {
+        lv_timer_delete(s_ai_timer);
+        s_ai_timer = NULL;
+    }
+    ai_url_close();
+#endif
     pass_close();
     s_content = NULL;
     s_detail = NULL;

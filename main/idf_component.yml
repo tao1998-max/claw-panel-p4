@@ -23,3 +23,9 @@ dependencies:
   # 无线：P4 无射频，Wi-Fi/BLE 由板载 ESP32-C6 通过 SDIO 提供
   espressif/esp_hosted: "2.11.7"
   espressif/esp_wifi_remote: "*"
+
+  # 小智 AI 语音助手（可剪裁）：版本与参考固件 v2.2.6 保持一致
+  espressif/esp-sr: "2.3.1"
+  espressif/esp_audio_codec: "2.4.1"
+  espressif/esp_audio_effects: "1.2.1"
+  78/esp-ml307: "3.6.7"

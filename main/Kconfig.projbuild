@@ -40,4 +40,57 @@ menu "P4 Template"
             打开后每 2 秒在「主页 / 设备状态 / 设置」之间自动切换，并在日志里
             打印 free heap，用来验证反复切页不泄漏。发布固件请关闭。
 
+    config TEMPLATE_ENABLE_XIAOZHI
+        bool "启用小智 AI 语音助手（半双工）"
+        default n
+        help
+            悬浮机器人 + 聊天对话框，接官方 xiaozhi.me 激活或自建服务器。
+            TTS 播放时暂停麦克风上行（无 AEC）；可用唤醒词或点击打断。
+            关闭后不启动 AI、不显示机器人/设置分类，固件回到基线大小。
+
+    if TEMPLATE_ENABLE_XIAOZHI
+
+        config TEMPLATE_XIAOZHI_OTA_URL
+            string "小智 OTA / 激活服务地址"
+            default "https://api.tenclass.net/xiaozhi/ota/"
+
+        config TEMPLATE_XIAOZHI_WAKE_WORD
+            bool "启用“你好小智”离线唤醒词"
+            default y
+            help
+                关闭后不初始化 WakeNet，仍可点悬浮机器人开始对话；
+                这是控制固件体积和待机 CPU 占用最有效的开关。
+
+        config TEMPLATE_XIAOZHI_WAKE_WORD_IN_SPEAKING
+            bool "TTS 播放时保留唤醒词打断"
+            depends on TEMPLATE_XIAOZHI_WAKE_WORD
+            default y
+            help
+                关闭后 TTS 播放期间完全不检测唤醒词，避免扬声器声音误触发；
+                此时只能点悬浮机器人打断/继续。
+
+        config TEMPLATE_XIAOZHI_CHIME
+            bool "启用 XiaoZhi 原版 OGG 提示音"
+            default y
+
+        config TEMPLATE_XIAOZHI_MIC_GAIN_DB
+            int "ES8311 输入增益 (dB)"
+            default 30
+            range 0 36
+
+        config TEMPLATE_XIAOZHI_AUTO_LISTEN
+            bool "调试：激活完成后自动开始一次聆听"
+            default n
+            help
+                仅用于产线/台架验证 WebSocket 与音频链路。正常固件保持关闭，
+                由悬浮机器人或“你好小智”触发对话。
+
+        config TEMPLATE_XIAOZHI_AUTO_OPEN_CHAT
+            bool "调试：启动后自动打开聊天面板"
+            default n
+            help
+                仅用于检查聊天面板/动态中文字体，正常固件保持关闭。
+
+    endif
+
 endmenu

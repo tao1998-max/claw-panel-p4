@@ -1,5 +1,6 @@
 #include "ui.h"
 
+#include "ai_ui.h"
 #include "ui_shell.h"
 #include "ui_theme.h"
 
@@ -18,6 +19,7 @@ void ui_init(void)
                                                   true, UI_FONT_BODY);
         lv_display_set_theme(disp, theme);
     }
+    ai_ui_init();
     ui_shell_init();
 }
 

@@ -83,6 +83,9 @@ void hw_audio_set_volume(int percent);
 int  hw_audio_get_volume(void);
 void hw_audio_beep(void);
 
+/* 任一网口拿到 IP 后只启动一次 SNTP（Wi-Fi / 以太网 / AI 共用）。 */
+void hw_sntp_start_once(void);
+
 void hw_display_set_brightness(int percent);
 int  hw_display_get_brightness(void);
 
