@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "src/claw_cap.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        json
+        claw_core
+        claw_skill
+        freertos
+)

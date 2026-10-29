@@ -5,6 +5,8 @@
 #include <mutex>
 #include <string>
 
+#include <cJSON.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
@@ -19,12 +21,13 @@ class WebsocketProtocol;
 struct AiJsonEvent {
     uint8_t type;
     uint8_t role;
-    uint8_t mcp_kind;
-    uint8_t mcp_value_type; /* 0=none, 1=int, 2=bool */
-    int32_t mcp_id;
-    int32_t mcp_arg;
-    char mcp_name[48];
     char text[1024];
+};
+
+/* Raw text frame waiting to be parsed on the AI task (PSRAM, owned by queue). */
+struct AiRawJson {
+    char *data;
+    size_t len;
 };
 
 class AiApp {
@@ -64,7 +67,9 @@ private:
     void SetState(ai_state_t state);
     void SetError(const char *message);
     void DrainJson();
-    void HandleMcp(const AiJsonEvent &event);
+    void DrainRawJson();
+    void EnqueueRawJson(const char *data, size_t len);
+    void DispatchJson(const cJSON *root);
     bool DrainSend();
     void SyncIdleAudio();
     void PlayPrompt(const char *name);
@@ -76,6 +81,7 @@ private:
     TaskHandle_t task_ = nullptr;
     EventGroupHandle_t events_ = nullptr;
     QueueHandle_t json_queue_ = nullptr;
+    QueueHandle_t raw_json_queue_ = nullptr;
 
     std::unique_ptr<AudioService> audio_service_;
     std::unique_ptr<WebsocketProtocol> protocol_;
@@ -89,6 +95,8 @@ private:
     std::atomic<bool> ignore_tts_stop_{false};
 
     std::mutex text_mutex_;
+    /* Serializes OGG effect playback with XiaoZhi prompt chimes. */
+    std::mutex audio_play_mutex_;
     std::string activation_code_;
     std::string error_;
     std::string last_wake_word_;

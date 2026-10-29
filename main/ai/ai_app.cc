@@ -7,6 +7,7 @@
 
 #include "sdkconfig.h"
 #include "cJSON.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -19,6 +20,7 @@
 #include "ai_settings.h"
 #include "ai_system_info.h"
 #include "ai_ui.h"
+#include "claw_mcp_bridge.h"
 #include "mcp_server.h"
 #include "esp_app_desc.h"
 #include "audio_service.h"
@@ -52,16 +54,42 @@ enum {
     JSON_LLM,
     JSON_ALERT,
     JSON_GOODBYE,
-    JSON_MCP,
-};
-
-enum {
-    MCP_INITIALIZE = 1,
-    MCP_TOOLS_LIST,
-    MCP_TOOLS_CALL,
 };
 
 static const char *TAG = "ai.app";
+
+/* Incoming frames larger than this are dropped instead of risking the heap.
+ * MCP Lua scripts are capped by TEMPLATE_CLAW_MCP_MAX_JSON. */
+#ifdef CONFIG_TEMPLATE_CLAW_MCP_MAX_JSON
+#define AI_RAW_JSON_MAX CONFIG_TEMPLATE_CLAW_MCP_MAX_JSON
+#else
+#define AI_RAW_JSON_MAX 8192
+#endif
+
+/* cJSON trees for large MCP arguments must not eat internal RAM: prefer PSRAM,
+ * fall back to the default heap. heap_caps_free() works for both heaps, so
+ * switching hooks is safe for trees allocated before Start(). */
+static void *cjson_psram_malloc(size_t size)
+{
+    void *ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return ptr != nullptr ? ptr : malloc(size);
+}
+
+static void cjson_psram_free(void *ptr)
+{
+    heap_caps_free(ptr);
+}
+
+static void install_cjson_hooks()
+{
+    static bool installed = false;
+    if (installed) {
+        return;
+    }
+    cJSON_Hooks hooks = {cjson_psram_malloc, cjson_psram_free};
+    cJSON_InitHooks(&hooks);
+    installed = true;
+}
 
 AiApp &AiApp::GetInstance()
 {
@@ -75,12 +103,17 @@ esp_err_t AiApp::Start()
         return ESP_OK;
     }
 
+    install_cjson_hooks();
+
     muted_ = ai_settings_muted();
     ai_audio_set_mute(muted_);
 
     events_ = xEventGroupCreate();
     json_queue_ = xQueueCreate(8, sizeof(AiJsonEvent));
-    if (events_ == nullptr || json_queue_ == nullptr) {
+    /* Raw frames are waiting for the AI task; keep a few slots so bursts of
+     * small control messages do not get dropped. */
+    raw_json_queue_ = xQueueCreate(4, sizeof(AiRawJson));
+    if (events_ == nullptr || json_queue_ == nullptr || raw_json_queue_ == nullptr) {
         running_ = false;
         return ESP_ERR_NO_MEM;
     }
@@ -109,8 +142,59 @@ esp_err_t AiApp::Start()
     audio_service_->Start();
     codec->SetOutputVolume(ai_audio_get_volume());
     ai_audio_set_play_pcm_callback([this](std::vector<int16_t> &&pcm) {
-        return audio_service_ != nullptr && audio_service_->PlayPcm(std::move(pcm));
+        if (!running_.load() || audio_service_ == nullptr) {
+            return false;
+        }
+        const ai_state_t state = state_.load();
+        if (state == AI_STATE_CONNECTING || state == AI_STATE_LISTENING ||
+            state == AI_STATE_SPEAKING) {
+            return false;
+        }
+        return audio_service_->PlayPcm(std::move(pcm));
     });
+    ai_audio_set_play_ogg_callback([this](const uint8_t *data, size_t size) {
+        if (!running_.load() || audio_service_ == nullptr) {
+            return false;
+        }
+        const ai_state_t state = state_.load();
+        if (state == AI_STATE_CONNECTING || state == AI_STATE_LISTENING ||
+            state == AI_STATE_SPEAKING) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(audio_play_mutex_);
+        audio_service_->PlaySound(std::string_view(
+            reinterpret_cast<const char *>(data), size));
+        return true;
+    });
+    ai_audio_set_input_callbacks(
+        [this](size_t max_samples) {
+            if (!running_.load() || muted_.load() || audio_service_ == nullptr) {
+                return false;
+            }
+            return audio_service_->OpenInputTap(max_samples);
+        },
+        [this](int16_t *out, size_t samples, uint32_t timeout_ms) {
+            if (!running_.load() || audio_service_ == nullptr) {
+                return (size_t)0;
+            }
+            return audio_service_->ReadInputTap(out, samples, timeout_ms);
+        },
+        [this]() {
+            if (audio_service_ != nullptr) {
+                audio_service_->CloseInputTap();
+            }
+        });
+    ai_audio_set_playback_callbacks(
+        [this]() {
+            return audio_service_ == nullptr || audio_service_->IsIdle();
+        },
+        [this]() {
+            if (audio_service_ != nullptr &&
+                (state_.load() == AI_STATE_IDLE ||
+                 state_.load() == AI_STATE_DISABLED)) {
+                audio_service_->ResetDecoder();
+            }
+        });
 
     McpServer::GetInstance().SetSender([this](const std::string &payload) {
         if (protocol_ != nullptr && protocol_open_) {
@@ -118,6 +202,9 @@ esp_err_t AiApp::Start()
         }
     });
     McpServer::GetInstance().AddCommonTools();
+    /* Claw tools are compiled into main (they need McpServer); the runtime
+     * lives in components/claw_port and degrades to errors when disabled. */
+    claw_mcp_bridge_register();
 
     ai_net_start();
     ai_net_set_callback([this](bool online) {
@@ -145,6 +232,7 @@ void AiApp::Stop()
     }
     protocol_open_ = false;
     if (audio_service_) {
+        audio_service_->CloseInputTap();
         audio_service_->EnableVoiceProcessing(false);
         audio_service_->EnableWakeWordDetection(false);
         audio_service_->Stop();
@@ -215,7 +303,7 @@ void AiApp::PlayPrompt(const char *name)
 #if CONFIG_TEMPLATE_XIAOZHI_CHIME
     if (audio_service_ == nullptr || muted_ || name == nullptr) return;
     char path[64];
-    snprintf(path, sizeof(path), "/spiffs/%s", name);
+    snprintf(path, sizeof(path), AI_ASSETS_DIR "/%s", name);
     FILE *file = fopen(path, "rb");
     if (file == nullptr) {
         ESP_LOGW(TAG, "prompt missing: %s", path);
@@ -240,6 +328,7 @@ void AiApp::PlayPrompt(const char *name)
     fclose(file);
     if (got == (size_t)size) {
         ESP_LOGI(TAG, "play prompt %s (%ld bytes)", name, size);
+        std::lock_guard<std::mutex> lock(audio_play_mutex_);
         audio_service_->PlaySound(std::string_view((const char *)buf, (size_t)size));
     }
     free(buf);
@@ -415,91 +504,10 @@ bool AiApp::StartSession()
                 audio_service_->PushPacketToDecodeQueue(std::move(packet));
             }
         });
-        protocol_->OnIncomingJson([this](const cJSON *root) {
-            cJSON *type = cJSON_GetObjectItem(root, "type");
-            if (!cJSON_IsString(type)) return;
-
-            AiJsonEvent event = {};
-            if (strcmp(type->valuestring, "stt") == 0) {
-                cJSON *text = cJSON_GetObjectItem(root, "text");
-                if (!cJSON_IsString(text)) return;
-                event.type = JSON_STT;
-                strlcpy(event.text, text->valuestring, sizeof(event.text));
-            } else if (strcmp(type->valuestring, "tts") == 0) {
-                cJSON *state = cJSON_GetObjectItem(root, "state");
-                if (!cJSON_IsString(state)) return;
-                if (strcmp(state->valuestring, "start") == 0) {
-                    event.type = JSON_TTS_START;
-                } else if (strcmp(state->valuestring, "stop") == 0) {
-                    event.type = JSON_TTS_STOP;
-                } else if (strcmp(state->valuestring, "sentence_start") == 0) {
-                    cJSON *text = cJSON_GetObjectItem(root, "text");
-                    if (!cJSON_IsString(text)) return;
-                    event.type = JSON_TTS_SENTENCE;
-                    strlcpy(event.text, text->valuestring, sizeof(event.text));
-                } else {
-                    return;
-                }
-            } else if (strcmp(type->valuestring, "llm") == 0) {
-                cJSON *emotion = cJSON_GetObjectItem(root, "emotion");
-                if (!cJSON_IsString(emotion)) return;
-                event.type = JSON_LLM;
-                strlcpy(event.text, emotion->valuestring, sizeof(event.text));
-            } else if (strcmp(type->valuestring, "alert") == 0) {
-                cJSON *message = cJSON_GetObjectItem(root, "message");
-                if (!cJSON_IsString(message)) return;
-                event.type = JSON_ALERT;
-                strlcpy(event.text, message->valuestring, sizeof(event.text));
-            } else if (strcmp(type->valuestring, "goodbye") == 0) {
-                event.type = JSON_GOODBYE;
-            } else if (strcmp(type->valuestring, "mcp") == 0) {
-                cJSON *payload = cJSON_GetObjectItem(root, "payload");
-                if (!cJSON_IsObject(payload)) return;
-                cJSON *method = cJSON_GetObjectItem(payload, "method");
-                cJSON *id = cJSON_GetObjectItem(payload, "id");
-                if (!cJSON_IsString(method) || !cJSON_IsNumber(id)) {
-                    return;
-                }
-                event.type = JSON_MCP;
-                event.mcp_id = id->valueint;
-                ESP_LOGI(TAG, "MCP request method=%s id=%d", method->valuestring, event.mcp_id);
-                if (strcmp(method->valuestring, "initialize") == 0) {
-                    event.mcp_kind = MCP_INITIALIZE;
-                } else if (strcmp(method->valuestring, "tools/list") == 0) {
-                    event.mcp_kind = MCP_TOOLS_LIST;
-                } else if (strcmp(method->valuestring, "tools/call") == 0) {
-                    cJSON *params = cJSON_GetObjectItem(payload, "params");
-                    cJSON *name = cJSON_IsObject(params) ? cJSON_GetObjectItem(params, "name") : nullptr;
-                    if (!cJSON_IsString(name)) return;
-                    event.mcp_kind = MCP_TOOLS_CALL;
-                    strlcpy(event.mcp_name, name->valuestring, sizeof(event.mcp_name));
-                    event.mcp_arg = -1;
-                    event.mcp_value_type = 0;
-                    cJSON *args = cJSON_GetObjectItem(params, "arguments");
-                    if (cJSON_IsObject(args)) {
-                        if (strcmp(name->valuestring, "self.home.set_switch") == 0) {
-                            cJSON *on = cJSON_GetObjectItem(args, "on");
-                            if (cJSON_IsBool(on) || cJSON_IsNumber(on)) {
-                                event.mcp_value_type = 2;
-                                event.mcp_arg = (cJSON_IsTrue(on) ||
-                                                 (cJSON_IsNumber(on) && on->valueint != 0)) ? 1 : 0;
-                            }
-                        } else {
-                            cJSON *v = cJSON_GetObjectItem(args, "volume");
-                            if (!cJSON_IsNumber(v)) v = cJSON_GetObjectItem(args, "brightness");
-                            if (cJSON_IsNumber(v)) {
-                                event.mcp_value_type = 1;
-                                event.mcp_arg = v->valueint;
-                            }
-                        }
-                    }
-                } else {
-                    return;
-                }
-            } else {
-                return;
-            }
-            if (json_queue_) xQueueSend(json_queue_, &event, 0);
+        /* Parse off the WebSocket receive task: copy to PSRAM, parse on the AI
+         * task (16 KB stack). MCP arguments can be tens of KB. */
+        protocol_->OnIncomingJsonRaw([this](const char *data, size_t len) {
+            EnqueueRawJson(data, len);
         });
         protocol_->OnAudioChannelOpened([this]() {
             protocol_open_ = true;
@@ -571,6 +579,7 @@ void AiApp::InterruptSpeaking(bool wake_word)
 void AiApp::SessionLoop()
 {
     while (running_ && protocol_open_) {
+        DrainRawJson();
         DrainJson();
         if (!protocol_open_) break;
 
@@ -643,58 +652,118 @@ void AiApp::SessionLoop()
     }
 }
 
-void AiApp::HandleMcp(const AiJsonEvent &event)
+void AiApp::EnqueueRawJson(const char *data, size_t len)
 {
-    /* The WebSocket receive task only parsed the MCP request into a compact
-     * event. Reconstruct the JSON-RPC message here (AI task, 16 KB stack) and
-     * hand it to the official McpServer implementation. */
-    cJSON *root = cJSON_CreateObject();
-    if (root == nullptr) return;
-    cJSON_AddStringToObject(root, "jsonrpc", "2.0");
-    cJSON_AddNumberToObject(root, "id", event.mcp_id);
-
-    const char *method = nullptr;
-    if (event.mcp_kind == MCP_INITIALIZE) {
-        method = "initialize";
-    } else if (event.mcp_kind == MCP_TOOLS_LIST) {
-        method = "tools/list";
-    } else if (event.mcp_kind == MCP_TOOLS_CALL) {
-        method = "tools/call";
-    }
-    if (method == nullptr) {
-        cJSON_Delete(root);
+    if (!raw_json_queue_ || !data || len == 0) {
         return;
     }
-    cJSON_AddStringToObject(root, "method", method);
+    if (len > AI_RAW_JSON_MAX) {
+        ESP_LOGW(TAG, "drop JSON frame: %u bytes exceeds %d",
+                 (unsigned)len, (int)AI_RAW_JSON_MAX);
+        return;
+    }
 
-    if (event.mcp_kind == MCP_TOOLS_CALL) {
-        cJSON *params = cJSON_AddObjectToObject(root, "params");
-        cJSON_AddStringToObject(params, "name", event.mcp_name);
-        if (event.mcp_value_type == 1) {
-            cJSON *args = cJSON_AddObjectToObject(params, "arguments");
-            const char *key = nullptr;
-            if (strcmp(event.mcp_name, "self.audio_speaker.set_volume") == 0) {
-                key = "volume";
-            } else if (strcmp(event.mcp_name, "self.screen.set_brightness") == 0) {
-                key = "brightness";
-            }
-            if (key != nullptr) {
-                cJSON_AddNumberToObject(args, key, event.mcp_arg);
-            }
-        } else if (event.mcp_value_type == 2) {
-            cJSON *args = cJSON_AddObjectToObject(params, "arguments");
-            cJSON_AddBoolToObject(args, "on", event.mcp_arg != 0);
+    char *copy = (char *)heap_caps_malloc(len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (copy == nullptr) {
+        copy = (char *)malloc(len + 1);
+    }
+    if (copy == nullptr) {
+        ESP_LOGE(TAG, "drop JSON frame: out of memory");
+        return;
+    }
+    memcpy(copy, data, len);
+    copy[len] = '\0';
+
+    AiRawJson message = {copy, len};
+    if (xQueueSend(raw_json_queue_, &message, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "raw JSON queue full, dropping %u bytes", (unsigned)len);
+        heap_caps_free(copy);
+    }
+}
+
+void AiApp::DrainRawJson()
+{
+    if (!raw_json_queue_) {
+        return;
+    }
+
+    AiRawJson message;
+    while (xQueueReceive(raw_json_queue_, &message, 0) == pdTRUE) {
+        cJSON *root = cJSON_ParseWithLength(message.data, message.len);
+        if (root != nullptr) {
+            DispatchJson(root);
+            cJSON_Delete(root);
+        } else {
+            ESP_LOGW(TAG, "invalid JSON frame (%u bytes)", (unsigned)message.len);
         }
+        heap_caps_free(message.data);
+    }
+}
+
+void AiApp::DispatchJson(const cJSON *root)
+{
+    if (!cJSON_IsObject(root)) {
+        return;
+    }
+    cJSON *type = cJSON_GetObjectItem(root, "type");
+    if (!cJSON_IsString(type)) {
+        return;
     }
 
-    McpServer::GetInstance().ParseMessage(root);
-    if (event.mcp_kind == MCP_TOOLS_CALL &&
-        strncmp(event.mcp_name, "self.home.", 10) == 0) {
-        bool on = settings_get()->demo != 0;
-        ESP_LOGI(TAG, "home mcp -> demo=%d", on ? 1 : 0);
-        ai_ui_on_demo_switch(on);
+    /* MCP goes straight to the official server: it needs the untouched
+     * arguments object (Lua code, prompts) and replies through sender_. */
+    if (strcmp(type->valuestring, "mcp") == 0) {
+        cJSON *payload = cJSON_GetObjectItem(root, "payload");
+        if (!cJSON_IsObject(payload)) {
+            return;
+        }
+        cJSON *method = cJSON_GetObjectItem(payload, "method");
+        cJSON *id = cJSON_GetObjectItem(payload, "id");
+        if (!cJSON_IsString(method) || !cJSON_IsNumber(id)) {
+            return;
+        }
+        ESP_LOGI(TAG, "MCP request method=%s id=%d", method->valuestring, id->valueint);
+        McpServer::GetInstance().ParseMessage(payload);
+        return;
     }
-    cJSON_Delete(root);
+
+    AiJsonEvent event = {};
+    if (strcmp(type->valuestring, "stt") == 0) {
+        cJSON *text = cJSON_GetObjectItem(root, "text");
+        if (!cJSON_IsString(text)) return;
+        event.type = JSON_STT;
+        strlcpy(event.text, text->valuestring, sizeof(event.text));
+    } else if (strcmp(type->valuestring, "tts") == 0) {
+        cJSON *state = cJSON_GetObjectItem(root, "state");
+        if (!cJSON_IsString(state)) return;
+        if (strcmp(state->valuestring, "start") == 0) {
+            event.type = JSON_TTS_START;
+        } else if (strcmp(state->valuestring, "stop") == 0) {
+            event.type = JSON_TTS_STOP;
+        } else if (strcmp(state->valuestring, "sentence_start") == 0) {
+            cJSON *text = cJSON_GetObjectItem(root, "text");
+            if (!cJSON_IsString(text)) return;
+            event.type = JSON_TTS_SENTENCE;
+            strlcpy(event.text, text->valuestring, sizeof(event.text));
+        } else {
+            return;
+        }
+    } else if (strcmp(type->valuestring, "llm") == 0) {
+        cJSON *emotion = cJSON_GetObjectItem(root, "emotion");
+        if (!cJSON_IsString(emotion)) return;
+        event.type = JSON_LLM;
+        strlcpy(event.text, emotion->valuestring, sizeof(event.text));
+    } else if (strcmp(type->valuestring, "alert") == 0) {
+        cJSON *message = cJSON_GetObjectItem(root, "message");
+        if (!cJSON_IsString(message)) return;
+        event.type = JSON_ALERT;
+        strlcpy(event.text, message->valuestring, sizeof(event.text));
+    } else if (strcmp(type->valuestring, "goodbye") == 0) {
+        event.type = JSON_GOODBYE;
+    } else {
+        return;
+    }
+    if (json_queue_) xQueueSend(json_queue_, &event, 0);
 }
 
 bool AiApp::DrainSend()
@@ -760,9 +829,6 @@ void AiApp::DrainJson()
             CloseSession();
             SetState(AI_STATE_IDLE);
             SyncIdleAudio();
-            break;
-        case JSON_MCP:
-            HandleMcp(event);
             break;
         default:
             break;

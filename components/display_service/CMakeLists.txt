@@ -1,0 +1,12 @@
+idf_component_register(
+    SRCS
+        "src/display_service.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        lvgl
+        esp_timer
+        espressif__esp32_p4_function_ev_board
+        espressif__esp_lcd_touch
+        espressif__esp_lvgl_port
+)

@@ -50,6 +50,7 @@ lv_obj_t *ui_card_create(lv_obj_t *parent, int x, int y, int w, int h)
     lv_obj_set_style_radius(card, UI_RADIUS_M, 0);
     lv_obj_set_style_pad_all(card, 0, 0);
     lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(card, LV_OBJ_FLAG_SCROLL_CHAIN);
     return card;
 }
 
@@ -245,6 +246,7 @@ lv_obj_t *ui_list_row_create(lv_obj_t *parent, int x, int y, int w, int h)
     lv_obj_set_style_border_color(row, lv_color_hex(UI_COLOR_ACCENT), LV_STATE_PRESSED);
     lv_obj_set_style_border_opa(row, 80, LV_STATE_PRESSED);
     lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_SCROLL_CHAIN);
     return row;
 }
 
@@ -571,4 +573,200 @@ void ui_confirm_create(lv_obj_t *parent, const char *text, lv_event_cb_t on_conf
     lv_obj_t *ok = ui_button_create(box, i18n_str(STR_BTN_CONFIRM), 288, 176, 168, 48, 2);
     lv_obj_set_user_data(ok, (void *)on_confirm);
     lv_obj_add_event_cb(ok, confirm_ok_cb, LV_EVENT_CLICKED, NULL);
+}
+
+/* ---------------- 单行文本弹窗 ---------------- */
+
+static lv_obj_t *s_text_scrim;
+static lv_obj_t *s_text_ta;
+static ui_text_done_cb_t s_text_done;
+
+void ui_text_dialog_close(void)
+{
+    if (s_text_scrim != NULL) {
+        lv_obj_delete(s_text_scrim);
+    }
+    s_text_scrim = NULL;
+    s_text_ta = NULL;
+    s_text_done = NULL;
+}
+
+static void text_dialog_confirm_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_text_ta == NULL || s_text_done == NULL) {
+        return;
+    }
+    if (s_text_done(lv_textarea_get_text(s_text_ta))) {
+        ui_text_dialog_close();
+    } else {
+        lv_obj_set_style_border_color(s_text_ta, lv_color_hex(UI_COLOR_ERROR), 0);
+    }
+}
+
+static void text_dialog_cancel_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_text_dialog_close();
+}
+
+static void text_dialog_keyboard_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_READY) {
+        text_dialog_confirm_cb(e);
+    } else if (lv_event_get_code(e) == LV_EVENT_CANCEL) {
+        ui_text_dialog_close();
+    }
+}
+
+void ui_text_dialog_open(const char *title, const char *hint, const char *value,
+                         bool password, ui_text_done_cb_t done)
+{
+    if (s_text_scrim != NULL) {
+        return;
+    }
+    s_text_done = done;
+
+    s_text_scrim = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(s_text_scrim, UI_SCREEN_W, UI_SCREEN_H);
+    lv_obj_set_pos(s_text_scrim, 0, 0);
+    lv_obj_set_style_bg_color(s_text_scrim, lv_color_hex(UI_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(s_text_scrim, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(s_text_scrim, 0, 0);
+    lv_obj_set_style_radius(s_text_scrim, 0, 0);
+    lv_obj_set_style_pad_all(s_text_scrim, 0, 0);
+    lv_obj_remove_flag(s_text_scrim, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_text_scrim, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *box = ui_card_create(s_text_scrim, 0, 0, 760, 420);
+    lv_obj_center(box);
+
+    ui_badge_create(box, 20, 22, 36, LV_SYMBOL_EDIT, UI_COLOR_CYAN);
+    ui_label_create(box, title, 64, 28, UI_COLOR_TEXT, UI_FONT_BODY);
+    ui_label_create(box, hint, 64, 58, UI_COLOR_DISABLED, UI_FONT_SMALL);
+
+    s_text_ta = lv_textarea_create(box);
+    lv_obj_set_size(s_text_ta, 712, 56);
+    lv_obj_align(s_text_ta, LV_ALIGN_TOP_MID, 0, 86);
+    lv_textarea_set_one_line(s_text_ta, true);
+    lv_textarea_set_password_mode(s_text_ta, password);
+    lv_textarea_set_text(s_text_ta, value != NULL ? value : "");
+    lv_textarea_set_cursor_pos(s_text_ta, LV_TEXTAREA_CURSOR_LAST);
+    lv_obj_set_style_bg_color(s_text_ta, lv_color_hex(UI_COLOR_TILE), 0);
+    lv_obj_set_style_bg_opa(s_text_ta, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_text_ta, lv_color_hex(UI_COLOR_BORDER), 0);
+    lv_obj_set_style_border_width(s_text_ta, 1, 0);
+    lv_obj_set_style_border_color(s_text_ta, lv_color_hex(UI_COLOR_ACCENT), LV_STATE_FOCUSED);
+    lv_obj_set_style_radius(s_text_ta, UI_RADIUS, 0);
+    lv_obj_set_style_pad_hor(s_text_ta, 16, 0);
+    lv_obj_set_style_pad_ver(s_text_ta, 8, 0);
+    lv_obj_set_style_text_color(s_text_ta, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(s_text_ta, UI_FONT_SMALL, 0);
+    lv_obj_set_style_bg_color(s_text_ta, lv_color_hex(UI_COLOR_ACCENT), LV_PART_CURSOR);
+    lv_obj_set_style_bg_opa(s_text_ta, LV_OPA_COVER, LV_PART_CURSOR);
+
+    lv_obj_t *cancel = ui_button_create(box, i18n_str(STR_BTN_CANCEL), 24, 154, 160, 44, 0);
+    lv_obj_add_event_cb(cancel, text_dialog_cancel_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ok = ui_button_create(box, i18n_str(STR_BTN_CONFIRM), 194, 154, 160, 44, 1);
+    lv_obj_add_event_cb(ok, text_dialog_confirm_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *kb = lv_keyboard_create(box);
+    lv_obj_set_size(kb, 712, 190);
+    lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, -16);
+    lv_keyboard_set_textarea(kb, s_text_ta);
+    lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_obj_set_style_bg_color(kb, lv_color_hex(UI_COLOR_SURFACE_HI), 0);
+    lv_obj_set_style_bg_opa(kb, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(kb, 0, 0);
+    lv_obj_set_style_pad_all(kb, 8, 0);
+    lv_obj_set_style_text_font(kb, UI_FONT_ICON, 0);
+    lv_obj_set_style_bg_color(kb, lv_color_hex(UI_COLOR_TILE), LV_PART_ITEMS);
+    lv_obj_set_style_bg_opa(kb, LV_OPA_COVER, LV_PART_ITEMS);
+    lv_obj_set_style_text_color(kb, lv_color_hex(UI_COLOR_TEXT), LV_PART_ITEMS);
+    lv_obj_set_style_border_width(kb, 0, LV_PART_ITEMS);
+    lv_obj_set_style_radius(kb, UI_RADIUS_S, LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(kb, lv_color_hex(UI_COLOR_ACCENT),
+                              LV_PART_ITEMS | LV_STATE_PRESSED);
+    lv_obj_add_event_cb(kb, text_dialog_keyboard_cb, LV_EVENT_READY, NULL);
+    lv_obj_add_event_cb(kb, text_dialog_keyboard_cb, LV_EVENT_CANCEL, NULL);
+}
+
+/* ---------------- 长文本/代码查看器 ---------------- */
+
+static lv_obj_t *s_view_scrim;
+static ui_text_view_close_cb_t s_view_close_cb;
+
+void ui_text_view_close(void)
+{
+    lv_obj_t *scrim = s_view_scrim;
+    ui_text_view_close_cb_t cb = s_view_close_cb;
+    s_view_scrim = NULL;
+    s_view_close_cb = NULL;
+    if (scrim != NULL) {
+        lv_obj_delete(scrim);
+    }
+    if (cb != NULL) {
+        cb();
+    }
+}
+
+static void view_close_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_text_view_close();
+}
+
+void ui_text_view_open(const char *title, const char *text,
+                       const lv_font_t *font, ui_text_view_close_cb_t on_close)
+{
+    ui_text_view_close();
+
+    if (text == NULL) {
+        text = "";
+    }
+    s_view_close_cb = on_close;
+
+    s_view_scrim = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(s_view_scrim, UI_SCREEN_W, UI_SCREEN_H);
+    lv_obj_set_pos(s_view_scrim, 0, 0);
+    lv_obj_set_style_bg_color(s_view_scrim, lv_color_hex(UI_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(s_view_scrim, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(s_view_scrim, 0, 0);
+    lv_obj_set_style_radius(s_view_scrim, 0, 0);
+    lv_obj_set_style_pad_all(s_view_scrim, 0, 0);
+    lv_obj_remove_flag(s_view_scrim, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_view_scrim, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_view_scrim, view_close_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *box = ui_card_create(s_view_scrim, 0, 0, 900, 520);
+    lv_obj_center(box);
+
+    lv_obj_t *title_label = ui_label_create(box, title != NULL ? title : "",
+                                            24, 20, UI_COLOR_TEXT, UI_FONT_BODY);
+    lv_obj_set_width(title_label, 740);
+    lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
+    lv_obj_t *close = ui_button_create(box, i18n_str(STR_AI_CLOSE),
+                                       796, 16, 80, 36, 0);
+    lv_obj_add_event_cb(close, view_close_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *area = lv_obj_create(box);
+    lv_obj_set_pos(area, 24, 68);
+    lv_obj_set_size(area, 852, 428);
+    lv_obj_set_style_bg_color(area, lv_color_hex(UI_COLOR_TILE_DARK), 0);
+    lv_obj_set_style_bg_opa(area, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(area, lv_color_hex(UI_COLOR_BORDER), 0);
+    lv_obj_set_style_border_width(area, 1, 0);
+    lv_obj_set_style_radius(area, UI_RADIUS_M, 0);
+    lv_obj_set_style_pad_all(area, 12, 0);
+    lv_obj_set_scroll_dir(area, LV_DIR_VER);
+    lv_obj_remove_flag(area, LV_OBJ_FLAG_SCROLL_ONE);
+
+    lv_obj_t *label = lv_label_create(area);
+    lv_label_set_text_static(label, text);
+    lv_obj_set_width(label, 820);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(label, lv_color_hex(UI_COLOR_TEXT), 0);
+    if (font != NULL) {
+        lv_obj_set_style_text_font(label, font, 0);
+    }
 }

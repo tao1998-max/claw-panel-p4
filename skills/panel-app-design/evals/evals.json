@@ -1,0 +1,54 @@
+{
+  "evals": [
+    {
+      "id": "countdown-fat-only",
+      "prompt": "给 1024x600 的 ESP32-P4 面板做一个中文倒计时 App，预设 1/5/10/30 分钟，开始/暂停/继续/重置，界面要干净，不要图片。",
+      "expected_output": "A FAT-only package: design brief + tokens + ASCII wireframe, launcher.json, scripts/main.lua, assets/countdown_cn.ttf; no SD dependency.",
+      "assertions": [
+        "validate_app.py exits 0 with no sd_manifest.json",
+        "check_font_coverage.py exits 0 for all visible Chinese",
+        "launcher id matches the deployed directory",
+        "layout rows do not overlap and buttons are >=44 px",
+        "no lvgl.font_load path under /sdcard",
+        "runtime uses scr:load(), claw.abort_requested(), and lvgl.deinit()"
+      ]
+    },
+    {
+      "id": "sd-poster-gallery",
+      "prompt": "做一个有画面的游戏主界面：余烬酒馆风格，全屏背景、角色立绘、标题、左右翻页和底部按钮。素材可以放 SD 卡。",
+      "expected_output": "A poster-style App with an L0 background, L1 sprite, L2 LVGL controls, optional L3 EAF; FAT fallbacks and sd_manifest.json; SD staging tree.",
+      "assertions": [
+        "validate_app.py --sd-dir exits 0",
+        "sd_manifest entries have same-size fallbacks and valid kinds",
+        "package is <=300 KiB target or has a warning",
+        "image decoding uses image.load_file + set_raw_rgb565, not lvgl.image src",
+        "no lvgl.image src or lvgl.eaf src resource points at SD; heavy art goes through panel-assets and load_file",
+        "launch without SD renders the fallback; launch with SD logs SD source"
+      ]
+    },
+    {
+      "id": "missing-sd-fallback",
+      "prompt": "我拔掉 SD 卡后，应用不能黑屏，也不能崩溃；如果某张 SD 图损坏，只降级那一层。请给出实现和验证步骤。",
+      "expected_output": "A pcall-based asset resolver that tries SD, then same-size package fallback, then programmatic UI; logs one source line per layer.",
+      "assertions": [
+        "every optional image/audio load is wrapped in pcall",
+        "fallback dimensions equal SD dimensions",
+        "no blank screen when /sdcard/panel-assets/<id> is absent",
+        "no retry loop for SD mount",
+        "verification covers no-SD, partial-SD, and corrupt-file states"
+      ]
+    },
+    {
+      "id": "mqtt-heartbeat",
+      "prompt": "面板上做一个联网 App：连 MQTT 服务器，每 10 秒上报一次状态，订阅一个指令 topic，收到消息显示在屏幕上；断线要自动重连，界面不能卡。",
+      "expected_output": "An SD or FAT package using require(\"mqtt\"): mqtt.new with uri/client_id from launcher args, connect() before subscribe/publish, a main loop that interleaves m:next_event(50) with lvgl.process_events(20), reconnect handling on disconnect, m:close() on exit, and a status label.",
+      "assertions": [
+        "package starts with mqtt.new({uri=...}) where the URI comes from launcher.json args, not a hardcoded public broker",
+        "connect() is checked and subscribe/publish happen only after it returns true",
+        "the render loop calls m:next_event(50) together with lvgl.process_events(20)",
+        "disconnect/error events update the UI and a retry is scheduled (no busy loop)",
+        "m:close() runs on exit and validate_app.py exits 0"
+      ]
+    }
+  ]
+}

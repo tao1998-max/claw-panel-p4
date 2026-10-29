@@ -148,21 +148,37 @@ bool WebsocketProtocol::OpenAudioChannel() {
                 }
             }
         } else {
-            // Parse JSON data
-            auto root = cJSON_ParseWithLength(data, len);
-            auto type = cJSON_GetObjectItem(root, "type");
-            if (cJSON_IsString(type)) {
-                if (strcmp(type->valuestring, "hello") == 0) {
-                    ParseServerHello(root);
-                } else {
-                    if (on_incoming_json_ != nullptr) {
-                        on_incoming_json_(root);
-                    }
+            /* The server hello is tiny and must be handled here. Every other
+             * text frame is handed over unparsed: MCP arguments can be tens of
+             * KB and must not build a cJSON tree on this small receive task. */
+            bool hello_handled = false;
+            if (len <= 1024) {
+                cJSON *hello_root = cJSON_ParseWithLength(data, len);
+                cJSON *hello_type = hello_root != nullptr
+                                    ? cJSON_GetObjectItem(hello_root, "type") : nullptr;
+                if (cJSON_IsString(hello_type) && strcmp(hello_type->valuestring, "hello") == 0) {
+                    ParseServerHello(hello_root);
+                    hello_handled = true;
                 }
-            } else {
-                ESP_LOGE(TAG, "Missing message type, data: %s", std::string(data, len).c_str());
+                cJSON_Delete(hello_root);
             }
-            cJSON_Delete(root);
+
+            if (!hello_handled) {
+                if (on_incoming_json_raw_ != nullptr) {
+                    on_incoming_json_raw_(data, len);
+                } else {
+                    auto root = cJSON_ParseWithLength(data, len);
+                    auto type = root != nullptr ? cJSON_GetObjectItem(root, "type") : nullptr;
+                    if (cJSON_IsString(type)) {
+                        if (on_incoming_json_ != nullptr) {
+                            on_incoming_json_(root);
+                        }
+                    } else {
+                        ESP_LOGE(TAG, "Missing message type, len=%u", (unsigned)len);
+                    }
+                    cJSON_Delete(root);
+                }
+            }
         }
         last_incoming_time_ = std::chrono::steady_clock::now();
     });

@@ -8,6 +8,7 @@ idf_component_register(
         "hal/hw_display.c"
         "hal/hw_audio.c"
         "hal/hw_time.c"
+        "hal/hw_rtc.c"
         "hal/hw_storage.c"
         "hal/hw_rs485.c"
         "hal/hw_eth.c"
@@ -23,6 +24,7 @@ idf_component_register(
         "ai/ai_settings.c"
         "ai/ai_system_info.c"
         "ai/ai_ui.cc"
+        "audio/lua_module_audio.c"
         "ai/vendor/nvs_settings.cc"
         "ai/vendor/protocols/protocol.cc"
         "ai/vendor/protocols/websocket_protocol.cc"
@@ -35,13 +37,18 @@ idf_component_register(
         "ai/vendor/audio/wake_words/afe_wake_word.cc"
         "ai/vendor/cbin/cbin_font.c"
         "ai/vendor/mcp/mcp_server.cc"
+        "claw/claw_mcp_bridge.cc"
+        "claw/claw_panel_hooks.c"
+        "web/web_ui.c"
         "ui/ui.c"
         "ui/ui_widgets.c"
+        "ui/lvgl_mem_psram.c"
         "ui/ui_shell.c"
         "ui/pages/page_home.c"
         "ui/pages/page_sysinfo.c"
         "ui/pages/page_settings.c"
         "ui/pages/page_history.c"
+        "ui/pages/page_claw.c"
         "ui/fonts/font_zh_16.c"
         "ui/fonts/font_zh_20.c"
         "ui/fonts/font_zh_28.c"
@@ -55,11 +62,14 @@ idf_component_register(
         "ui/pages"
         "ai"
         "ai/vendor"
+        "audio"
         "ai/vendor/audio"
         "ai/vendor/audio/codecs"
         "ai/vendor/protocols"
         "ai/vendor/cbin"
         "ai/vendor/mcp"
+        "claw"
+        "web"
     REQUIRES
         espressif__esp32_p4_function_ev_board
         espressif__esp_video
@@ -77,14 +87,20 @@ idf_component_register(
         spi_flash
         efuse
         json
-        spiffs
         espressif__esp_codec_dev
         espressif__esp_audio_codec
         espressif__esp_audio_effects
+        espressif__esp-dsp
         espressif__esp-sr
         78__esp-ml307
         lwip
         nvs_flash
+        claw_port
+        cap_scheduler
+        app_registry
+        app_config
+        cap_im_platform
+        http_server
 )
 
 # 两点说明：

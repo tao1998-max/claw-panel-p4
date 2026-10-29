@@ -1,0 +1,29 @@
+{
+  "app_id": "sd_fallback",
+  "assets": [
+    {
+      "role": "background",
+      "layer": "L0",
+      "source": "sd_source/bg.jpg",
+      "sd": "img/bg.jpg",
+      "kind": "jpeg",
+      "width": 1024,
+      "height": 600,
+      "quality": 90,
+      "fallback": "assets/img/bg_fallback.jpg",
+      "fallback_quality": 48
+    },
+    {
+      "role": "sigil",
+      "layer": "L1",
+      "source": "sd_source/sigil.png",
+      "sd": "img/sigil.argb",
+      "kind": "argb8888",
+      "width": 180,
+      "height": 180,
+      "fallback": "assets/img/sigil_fallback.jpg",
+      "fallback_background": "#090d14",
+      "fallback_quality": 82
+    }
+  ]
+}

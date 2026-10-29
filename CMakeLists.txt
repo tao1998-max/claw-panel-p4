@@ -21,6 +21,17 @@ idf_build_set_property(MINIMAL_BUILD ON)
 set(PROJECT_VER "1.1.0")
 project(p4_template)
 
-# 小智聊天字体 + 唤醒词模型，放到现有 4 MB storage SPIFFS（/spiffs）。
-# idf.py flash 会连同 app 一起写；idf.py app-flash 不会更新资源。
-spiffs_create_partition_image(storage assets/ai FLASH_IN_PROJECT)
+# 小智聊天字体 + 唤醒词模型放进合并后的 4 MB FAT 的 /ai 目录。
+# 该镜像不能用 FLASH_IN_PROJECT：普通 idf.py flash 不能覆盖 /fatfs/claw
+# 工作区；首次迁移/整片擦除后显式执行 `idf.py claw-flash`。
+set(CLAW_FAT_STAGE_DIR "${CMAKE_BINARY_DIR}/claw_fat_root")
+
+add_custom_target(claw_fat_stage
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CLAW_FAT_STAGE_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CLAW_FAT_STAGE_DIR}/ai"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/ai" "${CLAW_FAT_STAGE_DIR}/ai"
+    COMMENT "Staging assets/ai as /ai for the Claw FAT image")
+
+fatfs_create_spiflash_image(claw "${CLAW_FAT_STAGE_DIR}")
+add_dependencies(fatfs_claw_bin claw_fat_stage)

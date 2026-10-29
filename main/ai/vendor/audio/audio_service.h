@@ -50,6 +50,7 @@
 #define AS_EVENT_WAKE_WORD_RUNNING          (1 << 1)
 #define AS_EVENT_AUDIO_PROCESSOR_RUNNING    (1 << 2)
 #define AS_EVENT_PLAYBACK_NOT_EMPTY         (1 << 3)
+#define AS_EVENT_INPUT_TAP_RUNNING          (1 << 4)
 
 #define AS_OPUS_GET_FRAME_DRU_ENUM(duration_ms)                   \
     ((duration_ms) == 5 ? ESP_OPUS_ENC_FRAME_DURATION_5_MS :      \
@@ -131,6 +132,12 @@ public:
     bool PlayPcm(std::vector<int16_t>&& pcm);
     void PlaySound(const std::string_view& sound);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);
+    /* Raw 16 kHz mono PCM tap for Lua recording/analysis. Frames are copied
+     * from the same reads that feed WakeNet/AFE, so opening a tap does not
+     * create a second codec reader. */
+    bool OpenInputTap(size_t max_samples);
+    void CloseInputTap();
+    size_t ReadInputTap(int16_t *out, size_t samples, uint32_t timeout_ms);
     void ResetDecoder();
     void SetModelsList(srmodel_list_t* models_list);
 
@@ -143,6 +150,17 @@ private:
     void* opus_decoder_ = nullptr;
     std::mutex decoder_mutex_;
     std::mutex input_resampler_mutex_;
+
+    std::mutex input_tap_mutex_;
+    std::condition_variable input_tap_cv_;
+    int16_t *input_tap_buf_ = nullptr;
+    size_t input_tap_capacity_ = 0;
+    size_t input_tap_head_ = 0;
+    size_t input_tap_tail_ = 0;
+    size_t input_tap_count_ = 0;
+    bool input_tap_open_ = false;
+    void PushInputTap(const std::vector<int16_t>& data);
+
     esp_ae_rate_cvt_handle_t input_resampler_ = nullptr;
     esp_ae_rate_cvt_handle_t output_resampler_ = nullptr;
     

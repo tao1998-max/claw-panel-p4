@@ -8,6 +8,10 @@ void Protocol::OnIncomingJson(std::function<void(const cJSON* root)> callback) {
     on_incoming_json_ = callback;
 }
 
+void Protocol::OnIncomingJsonRaw(std::function<void(const char* data, size_t len)> callback) {
+    on_incoming_json_raw_ = callback;
+}
+
 void Protocol::OnIncomingAudio(std::function<void(std::unique_ptr<AudioStreamPacket> packet)> callback) {
     on_incoming_audio_ = callback;
 }

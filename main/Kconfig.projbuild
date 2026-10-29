@@ -1,5 +1,20 @@
 menu "P4 Template"
 
+    menu "ESP-Claw IM transports"
+        config APP_CLAW_CAP_IM_QQ
+            bool "QQ 通道"
+            default y
+        config APP_CLAW_CAP_IM_FEISHU
+            bool "飞书通道"
+            default y
+        config APP_CLAW_CAP_IM_TG
+            bool "Telegram 通道"
+            default y
+        config APP_CLAW_CAP_IM_WECHAT
+            bool "微信通道"
+            default y
+    endmenu
+
     config TEMPLATE_ENABLE_CAMERA
         bool "启动 MIPI-CSI 摄像头"
         default n
@@ -90,6 +105,87 @@ menu "P4 Template"
             default n
             help
                 仅用于检查聊天面板/动态中文字体，正常固件保持关闭。
+
+        config TEMPLATE_ENABLE_CLAW
+            bool "启用 ESP-Claw 本地自动化（Lua / 后台任务 / 定时）"
+            default y
+            help
+                把小智的语音意图变成本地执行：Lua 脚本、文件工作区、后台任务、
+                定时自动化和任务列表。ESP-Claw 上游组件裁剪后内置在 components/，
+                音频/显示/配网仍由本工程负责。
+
+                首次接入阶段请先只编译验证体积，不要改分区表。
+
+        if TEMPLATE_ENABLE_CLAW
+
+            config TEMPLATE_CLAW_AGENT
+                bool "启用本地 Claw Agent（自带 LLM API Key，默认关闭）"
+                default n
+                help
+                    打开后编译 claw_core/claw_memory/claw_skill，可在 Claw 页面配置
+                    OpenAI 兼容后端。默认关闭：不建 TLS、不产生 API 费用。
+
+            config TEMPLATE_CLAW_AGENT_PROVISION
+                bool "构建期一次性写入 Agent 配置（仅开发，含密钥）"
+                depends on TEMPLATE_CLAW_AGENT
+                default n
+                help
+                    编译时从 components/claw_port/claw_agent_provision.h 读取
+                    API Key、地址和模型，仅在 NVS 里还没有 Key 时写入一次并开启
+                    Agent。该头文件已被 .gitignore 忽略。写入成功后请关闭本选项
+                    再烧正式固件，避免密钥留在二进制和后续更新里。
+
+            config TEMPLATE_CLAW_AGENT_MEMORY
+                bool "本地 Agent 会话记忆（官方 claw_memory）"
+                depends on TEMPLATE_CLAW_AGENT
+                default y
+                help
+                    初始化官方 claw_memory：跨请求的会话历史、长期记忆、
+                    memory_* 工具和自动记忆提取。每轮请求开始/结束会写 FAT；
+                    本工程启用 SPIRAM_XIP_FROM_PSRAM 后，亮屏写 FAT 不再关闭
+                    flash cache，不会造成 DPI 欠载/整屏闪烁。
+
+            config TEMPLATE_CLAW_LUA_SYNC_MS
+                int "小智同步 Lua 执行超时 (ms)"
+                default 3000
+                range 500 10000
+
+            config TEMPLATE_CLAW_MCP_MAX_JSON
+                int "MCP 入站 JSON 上限 (bytes)"
+                default 24576
+                range 4096 65536
+
+            config TEMPLATE_CLAW_MCP_MAX_SCRIPT
+                int "AI 生成 Lua 脚本上限 (bytes)"
+                default 16384
+                range 1024 65536
+
+            config TEMPLATE_CLAW_SELFTEST
+                bool "调试：启动时运行 Lua 沙箱自检"
+                default n
+                help
+                    启动后写一个临时脚本，检查危险库是否被移除、路径越界是否
+                    被拒绝、内存上限和超时是否生效，并把输出打到日志。
+                    发布固件请关闭。
+
+            config APP_CLAW_LUA_MODULE_HTTP_SERVER
+                bool "启用 Lua http_server 的 LAN 路由"
+                default y
+                help
+                    lua_module_http_server 让 Lua App 注册 /lua/<app_id>/* 静态
+                    资源与 /api/lua/<app_id>/* 接口，由 Web 的 httpd 转发到 App
+                    的 serve_forever()/poll() 事件队列。关闭后这些路由不注册。
+
+            config TEMPLATE_CLAW_LUA_UNUSED_HW_MODULES
+                bool "注册无板载硬件的 Lua 硬件模块"
+                default n
+                help
+                    本板没有 button/knob/led_strip/sci/environmental_sensor
+                    这些外设。默认不注册，避免 Agent 在 Lua 模块列表里看到
+                    它们、调用后才知道不存在。自行外接硬件后可打开；GPIO/
+                    I2C/ADC/PWM/RMT/UART 等通用驱动模块不受影响。
+
+        endif
 
     endif
 

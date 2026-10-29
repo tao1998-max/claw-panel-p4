@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Generate the SPIFFS asset folder for the XiaoZhi AI feature.
+"""Generate the AI asset folder for the XiaoZhi AI feature.
 
-Outputs (committed, so a normal build does not need Python):
+Outputs (committed, so a normal build does not need Python). The build packs
+this folder as /ai into the 4 MB claw FAT image; flash it with
+`idf.py claw-flash`.
     assets/ai/font_puhui_common_20_4.bin
     assets/ai/srmodels.bin
     assets/ai/THIRD_PARTY_NOTICES.txt

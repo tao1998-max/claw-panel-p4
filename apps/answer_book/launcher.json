@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "id": "answer_book",
+  "display_name": "答案之书",
+  "entry": "scripts/main.lua",
+  "args": {},
+  "order": 30,
+  "visible": true
+}

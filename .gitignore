@@ -11,5 +11,8 @@ managed_components/
 # 字体生成工具的 npm 依赖（package-lock.json 可还原）
 tools/fonts/node_modules/
 
+# 本地设备密钥（构建期一次性配置，不入库）
+components/claw_port/claw_agent_provision.h
+
 # 编辑器/机器相关配置
 .vscode/

@@ -67,6 +67,11 @@ void hw_display_set_brightness(int percent)
 {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
+    /* Repeated no-op writes reconfigure the backlight PWM and are visible as a
+     * brief flicker when scripts replay the same value. */
+    if (percent == s_brightness) {
+        return;
+    }
     s_brightness = percent;
     bsp_display_brightness_set(percent);
 }

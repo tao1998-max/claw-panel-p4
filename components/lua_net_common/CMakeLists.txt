@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "src/lua_net_common.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        cap_lua
+        lwip
+        esp_timer
+        freertos
+)

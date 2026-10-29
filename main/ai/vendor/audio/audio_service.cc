@@ -1,5 +1,6 @@
 #include "audio_service.h"
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <cstring>
 
 #define RATE_CVT_CFG(_src_rate, _dest_rate, _channel)        \
@@ -135,12 +136,16 @@ void AudioService::Start() {
         vTaskDelete(NULL);
     }, "audio_input", 2048 * 3, this, 8, &audio_input_task_handle_, 0);
 
-    /* Start the audio output task */
-    xTaskCreate([](void* arg) {
+    /* Start the audio output task.
+     * Local patch: sampling/playback tasks never touch flash, so keep their
+     * stacks in PSRAM and preserve the scarce internal RAM for the audio DMA
+     * buffers, TLS and LVGL. */
+    xTaskCreateWithCaps([](void* arg) {
         AudioService* audio_service = (AudioService*)arg;
         audio_service->AudioOutputTask();
-        vTaskDelete(NULL);
-    }, "audio_output", 2048 * 2, this, 6, &audio_output_task_handle_);
+        vTaskDeleteWithCaps(NULL);
+    }, "audio_output", 2048 * 2, this, 6, &audio_output_task_handle_,
+       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #else
     /* Start the audio input task */
     xTaskCreate([](void* arg) {
@@ -157,12 +162,15 @@ void AudioService::Start() {
     }, "audio_output", 2048, this, 6, &audio_output_task_handle_);
 #endif
 
-    /* Start the opus codec task */
-    xTaskCreate([](void* arg) {
+    /* Start the opus codec task.
+     * Local patch: the 24 KB codec stack is the largest consumer here and the
+     * task performs pure software encode/decode, so it lives in PSRAM. */
+    xTaskCreateWithCaps([](void* arg) {
         AudioService* audio_service = (AudioService*)arg;
         audio_service->OpusCodecTask();
-        vTaskDelete(NULL);
-    }, "opus_codec", 2048 * 12, this, 5, &opus_codec_task_handle_);
+        vTaskDeleteWithCaps(NULL);
+    }, "opus_codec", 2048 * 12, this, 5, &opus_codec_task_handle_,
+       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 }
 
 void AudioService::Stop() {
@@ -226,10 +234,119 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
     return true;
 }
 
+bool AudioService::OpenInputTap(size_t max_samples)
+{
+    if (max_samples == 0) {
+        max_samples = 16000;
+    }
+
+    std::lock_guard<std::mutex> lock(input_tap_mutex_);
+    if (input_tap_open_) {
+        return false;
+    }
+    int16_t *buf = (int16_t *)heap_caps_malloc(max_samples * sizeof(int16_t),
+                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (buf == nullptr) {
+        return false;
+    }
+    input_tap_buf_ = buf;
+    input_tap_capacity_ = max_samples;
+    input_tap_head_ = 0;
+    input_tap_tail_ = 0;
+    input_tap_count_ = 0;
+    input_tap_open_ = true;
+    xEventGroupSetBits(event_group_, AS_EVENT_INPUT_TAP_RUNNING);
+    return true;
+}
+
+void AudioService::CloseInputTap()
+{
+    int16_t *buf = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(input_tap_mutex_);
+        if (!input_tap_open_) {
+            return;
+        }
+        input_tap_open_ = false;
+        buf = input_tap_buf_;
+        input_tap_buf_ = nullptr;
+        input_tap_capacity_ = 0;
+        input_tap_head_ = 0;
+        input_tap_tail_ = 0;
+        input_tap_count_ = 0;
+    }
+    xEventGroupClearBits(event_group_, AS_EVENT_INPUT_TAP_RUNNING);
+    input_tap_cv_.notify_all();
+    heap_caps_free(buf);
+}
+
+size_t AudioService::ReadInputTap(int16_t *out, size_t samples, uint32_t timeout_ms)
+{
+    if (out == nullptr || samples == 0) {
+        return 0;
+    }
+
+    std::unique_lock<std::mutex> lock(input_tap_mutex_);
+    size_t got = 0;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeout_ms);
+    while (got < samples && input_tap_open_) {
+        while (got < samples && input_tap_count_ > 0) {
+            out[got++] = input_tap_buf_[input_tap_tail_];
+            input_tap_tail_ = (input_tap_tail_ + 1) % input_tap_capacity_;
+            input_tap_count_--;
+        }
+        if (got >= samples) {
+            break;
+        }
+        input_tap_cv_.notify_all();
+        if (timeout_ms == 0 ||
+            input_tap_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
+            break;
+        }
+    }
+    return got;
+}
+
+void AudioService::PushInputTap(const std::vector<int16_t>& data)
+{
+    if (data.empty()) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(input_tap_mutex_);
+    if (!input_tap_open_ || input_tap_capacity_ == 0) {
+        return;
+    }
+
+    const bool stereo = codec_ != nullptr && codec_->input_channels() == 2;
+    size_t pushed = 0;
+    if (stereo) {
+        for (size_t i = 0; i + 1 < data.size() && input_tap_count_ < input_tap_capacity_;
+             i += 2) {
+            input_tap_buf_[input_tap_head_] = (int16_t)(((int32_t)data[i] + data[i + 1]) / 2);
+            input_tap_head_ = (input_tap_head_ + 1) % input_tap_capacity_;
+            input_tap_count_++;
+            pushed++;
+        }
+    } else {
+        for (size_t i = 0; i < data.size() && input_tap_count_ < input_tap_capacity_; ++i) {
+            input_tap_buf_[input_tap_head_] = data[i];
+            input_tap_head_ = (input_tap_head_ + 1) % input_tap_capacity_;
+            input_tap_count_++;
+            pushed++;
+        }
+    }
+    if (pushed > 0) {
+        input_tap_cv_.notify_all();
+    }
+}
+
 void AudioService::AudioInputTask() {
     while (true) {
         EventBits_t bits = xEventGroupWaitBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING |
-            AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING,
+            AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING |
+            AS_EVENT_INPUT_TAP_RUNNING,
             pdFALSE, pdFALSE, portMAX_DELAY);
 
         if (service_stopped_) {
@@ -259,6 +376,7 @@ void AudioService::AudioInputTask() {
                     }
                     data = std::move(mono_data);
                 }
+                PushInputTap(data);
                 PushTaskToEncodeQueue(kAudioTaskTypeEncodeToTestingQueue, std::move(data));
                 continue;
             }
@@ -269,12 +387,24 @@ void AudioService::AudioInputTask() {
             int samples = 160; // 10ms
             std::vector<int16_t> data;
             if (ReadAudioData(data, 16000, samples)) {
+                PushInputTap(data);
                 if (bits & AS_EVENT_WAKE_WORD_RUNNING) {
                     wake_word_->Feed(data);
                 }
                 if (bits & AS_EVENT_AUDIO_PROCESSOR_RUNNING) {
                     audio_processor_->Feed(std::move(data));
                 }
+                continue;
+            }
+        }
+
+        /* Tap-only mode: no WakeNet/AFE consumer, but a recorder/analyzer is
+         * reading. Keep the codec running and copy frames into the tap. */
+        if ((bits & AS_EVENT_INPUT_TAP_RUNNING) &&
+            !(bits & (AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING))) {
+            std::vector<int16_t> data;
+            if (ReadAudioData(data, 16000, 160)) {
+                PushInputTap(data);
                 continue;
             }
         }

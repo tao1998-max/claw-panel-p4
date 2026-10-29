@@ -1,0 +1,14 @@
+idf_component_register(
+    SRCS
+        "src/lua_module_mqtt.c"
+    INCLUDE_DIRS
+        "src"
+    REQUIRES
+        cap_lua
+        lua_net_common
+        mqtt
+        esp-tls
+        mbedtls
+        esp_timer
+        freertos
+)

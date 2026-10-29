@@ -10,7 +10,7 @@
 | `main/ai/` | 状态机、OTA/激活、网络、音频、UI、设置 | 可整目录删除 |
 | `main/ai/vendor/` | XiaoZhi 协议/音频源码（MIT，保留 LICENSE） | 随 `main/ai/` 删除 |
 | `assets/ai_src/` | 字体源文件/归属说明 | 可删 |
-| `assets/ai/` | SPIFFS 内容（字体 + srmodels.bin） | 可删 |
+| `assets/ai/` | 4 MB FAT 的 `/fatfs/ai` 内容（字体 + srmodels.bin + 提示音） | 可删 |
 | `tools/ai_assets/build_assets.py` | 资源生成脚本 | 可删 |
 | `main/ui/fonts/font_robot_30.c` | 机器人图标子集 | 可删 |
 | `tools/fonts/gen_robot_font.ps1` | 机器人图标生成脚本 | 可删 |
@@ -52,7 +52,8 @@ CONFIG_TEMPLATE_ENABLE_XIAOZHI=n
    `78__esp-ml307` 等 REQUIRE。
 4. 从 `main/idf_component.yml` 删除 `espressif/esp-sr`、`esp_audio_codec`、
    `esp_audio_effects`、`78/esp-ml307`。
-5. 从顶层 `CMakeLists.txt` 删除 `spiffs_create_partition_image(...)`。
+5. 从顶层 `CMakeLists.txt` 删除 `assets/ai` 的 staging 与 `fatfs_create_spiflash_image(claw ...)`
+   （`claw` FAT 仍保留给 ESP-Claw 工作区）。
 6. 从 `main/Kconfig.projbuild` 删除 `TEMPLATE_ENABLE_XIAOZHI` 段。
 7. 从 `page_settings.c` 删除 `CAT_AI` 及 `build_ai` 相关代码；从 `ui.c/ui_shell.c` 删除
    AI UI 调用；从 `app.c` 删除 `ai_*` 调用；从 `hw_audio.c` 删除 AI 分支；删除 `hw_time.c`。
@@ -76,12 +77,18 @@ CONFIG_TEMPLATE_ENABLE_XIAOZHI=n
 - 唤醒词模型：`wn9_nihaoxiaozhi_tts`，`srmodels.bin` 通过 `srmodel_load()` 从 PSRAM 加载。
 - 提示音：使用 XiaoZhi 原版 OGG（`assets/ai/*.ogg`，经 `AudioService::PlaySound()` + `OggDemuxer` 播放）：
   唤醒/开始聆听 `popup.ogg`、首次激活码 `activation.ogg`、激活成功 `success.ogg`、错误 `exclamation.ogg`。
-- 语音唤醒自动打开的气泡在 TTS 回答结束、播放队列清空后延迟 5 秒**只收起 UI**，不调用 `ai_stop_session()`；会话仍按原超时/结束逻辑。若气泡是自动收起的，新的 STT 或 TTS（包括音乐/歌词）到达时会自动重新弹出；手动点机器人打开的气泡保持。
+- 语音唤醒自动打开的气泡在 TTS 回答结束、播放队列清空后延迟 5 秒**只收起 UI**，不调用 `ai_stop_session()`；会话仍按原超时/结束逻辑。若气泡是自动收起的，新的 STT 或 TTS 文本到达时会自动重新弹出；手动点机器人打开的气泡保持。没有网络音乐/歌词播放器。
 - 用户**手动关闭**完整对话后（点气泡外、右上角关闭或再点机器人），会话不结束，也不再自动弹完整窗口；后续用户/小智/系统信息显示在机器人上方 320×54 的小气泡里。文字超出宽度时用 `LV_LABEL_LONG_SCROLL_CIRCULAR` 横向循环滚动，8 秒没有新信息自动隐藏；点小气泡可重新打开完整对话。会话进入 IDLE 或重新激活时会清除“手动关闭”状态。
 - 页面切换不卡顿：播放任务优先级提高到 6（output）/5（opus），playback 队列从 2 增加到 4（约 240 ms 缓冲）。
 - MCP：hello 声明 `features.mcp=true`；移植官方 `McpServer` 的 Property/McpTool/ParseMessage/DoToolCall 结构，实现 `initialize`、`tools/list`、`tools/call`，提供
-  `self.get_device_status`、`self.audio_speaker.set_volume`、`self.screen.set_brightness`、`self.home.turn_on` / `self.home.turn_off`（主页演示开关，无参数）。
+  `self.get_device_status`、`self.audio_speaker.set_volume`、`self.screen.set_brightness`。
+  主页演示开关改由本地 Lua/Agent 的 `claw.panel.demo(on)` 控制。
   音量/亮度直接调用 `settings_set_volume()` / `settings_set_brightness()`，会同步落 NVS。
+- 入站文本帧：只有 ≤1 KB 的消息在 WebSocket 接收任务上解析（用于 hello）；其余整帧
+  复制到 PSRAM 后由 AI 任务解析，避免大 MCP 参数（Lua 代码）在 4 KB 接收任务上分配
+  cJSON。cJSON 的 malloc/free 钩子改为 PSRAM 优先。上限
+  `CONFIG_TEMPLATE_CLAW_MCP_MAX_JSON`（默认 24 KB），超限丢帧并记日志。
+- Claw 工具（`self.claw.*`）及 Lua 沙箱见 `docs/claw.md`。
 
 ## 资源生成
 
@@ -94,15 +101,17 @@ python tools/fonts/collect_chars.py
 powershell -File tools/fonts/gen_fonts.ps1
 ```
 
-生成后的 `assets/ai/` 随工程提交，普通构建不需要 Python/Node。
+生成后的 `assets/ai/` 随工程提交，普通构建不需要 Python/Node。资源改完后执行
+`idf.py build && idf.py claw-flash`，把重新生成的 4 MB `build/claw.bin` 写到
+`0xC00000`；普通 `idf.py flash`/`app-flash` 不会更新 `/fatfs/ai`。
 
 ## 排查
 
 | 现象 | 检查 |
 |---|---|
 | 没有机器人 | `CONFIG_TEMPLATE_ENABLE_XIAOZHI=y`、NVS `ai/en=1`、`ai_available()` |
-| 聊天中文方框 | `assets/ai/font_puhui_common_20_4.bin` 是否烧入 storage；`CONFIG_LV_FONT_FMT_TXT_LARGE=y` |
-| 唤醒词无效 | SPIFFS 是否挂载、`srmodels.bin` 是否加载、日志模型名是否为 `wn9_nihaoxiaozhi_tts` |
+| 聊天中文方框 | `assets/ai/font_puhui_common_20_4.bin` 是否烧入 `/fatfs/ai`（`idf.py claw-flash`）；`CONFIG_LV_FONT_FMT_TXT_LARGE=y` |
+| 唤醒词无效 | FAT 是否挂载、`/fatfs/ai/srmodels.bin` 是否加载、日志模型名是否为 `wn9_nihaoxiaozhi_tts` |
 | 按机器人无反应 | 是否已激活；看 `ai.ota` 日志与设置页状态/激活码 |
 | WebSocket 连不上 | 时间/证书、Wi-Fi/Ethernet 是否有 IP、token 是否过期；`ai.net`/`WS` 日志 |
 | TTS 无声 | 音量是否 0、ES8311 PA、`AudioService` 是否解码（24k→16k 重采样日志） |

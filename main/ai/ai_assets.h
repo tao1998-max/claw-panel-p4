@@ -10,6 +10,8 @@
 extern "C" {
 #endif
 
+#define AI_ASSETS_DIR "/fatfs/ai"
+
 esp_err_t ai_assets_init(void);
 uint8_t *ai_assets_font_buffer(size_t *size);
 srmodel_list_t *ai_assets_models(void);

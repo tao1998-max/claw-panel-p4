@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -18,6 +19,7 @@ extern const ui_page_t page_home;
 extern const ui_page_t page_sysinfo;
 extern const ui_page_t page_settings;
 extern const ui_page_t page_history;
+extern const ui_page_t page_claw;
 
 static const char *TAG = "ui.shell";
 
@@ -180,6 +182,7 @@ static const ui_page_t *s_pages[] = {
     &page_home,
     &page_sysinfo,
     &page_history,
+    &page_claw,
     &page_settings,
 };
 
@@ -190,7 +193,9 @@ static lv_obj_t *s_header;
 static lv_obj_t *s_content;
 static lv_obj_t *s_nav;
 static lv_obj_t *s_title;
+static lv_obj_t *s_clock;
 static lv_obj_t *s_uptime;
+static time_t s_clock_key = -1;
 /* Material Design Icons：wifi-strength-1..4 与 ethernet（PUA 编码） */
 #define ICON_WIFI_1 "\xF3\xB0\xA4\x9F"
 #define ICON_WIFI_2 "\xF3\xB0\xA4\xA2"
@@ -266,6 +271,25 @@ static void chrome_update(void)
 {
     if (s_uptime == NULL) {
         return;
+    }
+
+    if (s_clock != NULL) {
+        time_t now = time(NULL);
+        if (now > (time_t)1600000000LL) {
+            time_t minute_key = now / 60;
+            if (minute_key != s_clock_key) {
+                struct tm tm_now = {0};
+                if (localtime_r(&now, &tm_now) != NULL) {
+                    lv_label_set_text_fmt(s_clock, "%02d-%02d %02d:%02d",
+                                          tm_now.tm_mon + 1, tm_now.tm_mday,
+                                          tm_now.tm_hour, tm_now.tm_min);
+                    s_clock_key = minute_key;
+                }
+            }
+        } else if (s_clock_key != -1) {
+            lv_label_set_text(s_clock, "--:--");
+            s_clock_key = -1;
+        }
     }
 
     uint32_t sec = (uint32_t)(esp_timer_get_time() / 1000000);
@@ -601,6 +625,8 @@ static void header_build(void)
     lv_obj_set_style_pad_column(right, UI_SPACE_M, 0);
     lv_obj_set_style_pad_right(right, UI_SPACE_L, 0);
 
+    s_clock = ui_label_create(right, "--:--", 0, 0, UI_COLOR_TEXT, UI_FONT_BODY);
+
     s_uptime = ui_label_create(right, "", 0, 0, UI_COLOR_MUTED, UI_FONT_BODY);
 
     /* 网络状态：同一套 Material Design Icons，24px 视觉大小 */
@@ -856,9 +882,10 @@ void ui_shell_rebuild(void)
         lv_obj_delete(s_root);
         s_root = NULL;
     }
-    s_header = s_content = s_nav = s_title = s_uptime = s_net_wifi = NULL;
+    s_header = s_content = s_nav = s_title = s_clock = s_uptime = s_net_wifi = NULL;
     s_net_eth = NULL;
     s_net_chip = NULL;
+    s_clock_key = -1;
     s_net_kind = -1;
     s_wifi_level = -1;
     s_nav_marker = NULL;

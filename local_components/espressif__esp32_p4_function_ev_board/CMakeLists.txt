@@ -15,5 +15,5 @@ idf_component_register(
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "priv_include"
     REQUIRES ${REQ} fatfs
-    PRIV_REQUIRES ${PRIV_REQ} esp_lcd spiffs esp_psram
+    PRIV_REQUIRES ${PRIV_REQ} esp_lcd esp_psram
 )

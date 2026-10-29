@@ -26,7 +26,7 @@ typedef enum {
     AI_ROLE_ASSISTANT,
 } ai_role_t;
 
-/* 由 app.c 在 settings_init 之后调用：挂载 SPIFFS、读字体/模型。 */
+/* 由 app.c 在 settings_init 之后调用：挂载共享 FAT、读字体/模型。 */
 esp_err_t ai_early_init(void);
 
 /* 启动 AI 任务（非阻塞）。AI 编译关闭或运行时禁用时返回 ESP_ERR_NOT_SUPPORTED。 */

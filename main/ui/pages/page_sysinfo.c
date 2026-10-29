@@ -1,12 +1,16 @@
 #include "page_sysinfo.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
+#include "esp_vfs_fat.h"
+#include "sdkconfig.h"
 
+#include "claw_storage.h"
 #include "hw.h"
 #include "i18n.h"
 #include "ui_widgets.h"
@@ -24,9 +28,9 @@
 #define PANEL_H        (UI_PAGE_H - PANEL_Y)          /* 292 */
 #define GRID_Y         54
 #define CELL_W         468
-#define CELL_H         47
+#define CELL_H         42
 #define CELL_GAP_X     8
-#define CELL_GAP_Y     6
+#define CELL_GAP_Y     4
 
 static lv_obj_t *s_root;
 static lv_obj_t *s_ready;
@@ -36,6 +40,7 @@ static lv_obj_t *s_heap_bar;
 static lv_obj_t *s_psram;
 static lv_obj_t *s_psram_bar;
 static lv_obj_t *s_uptime;
+static lv_obj_t *s_fat;
 static lv_obj_t *s_mod_badge[HW_MODULE_COUNT];
 static lv_obj_t *s_mod_dot[HW_MODULE_COUNT];
 static lv_obj_t *s_mod_value[HW_MODULE_COUNT];
@@ -65,6 +70,22 @@ static uint32_t module_state_color(const hw_status_t *st, const char **text)
     }
     *text = i18n_str(STR_ST_FAIL);
     return UI_COLOR_ERROR;
+}
+
+static void format_storage(char *out, size_t out_size,
+                           uint64_t total, uint64_t used)
+{
+    if (total == 0) {
+        strlcpy(out, "--", out_size);
+    } else if (total >= 1024 * 1024) {
+        snprintf(out, out_size, "%.2f / %.2f MB",
+                 (double)used / (1024.0 * 1024.0),
+                 (double)total / (1024.0 * 1024.0));
+    } else {
+        snprintf(out, out_size, "%llu / %llu KB",
+                 (unsigned long long)(used / 1024),
+                 (unsigned long long)(total / 1024));
+    }
 }
 
 static void refresh_values(void)
@@ -121,6 +142,18 @@ static void refresh_values(void)
                               (unsigned long)(sec / 3600),
                               (unsigned long)((sec / 60) % 60),
                               (unsigned long)(sec % 60));
+    }
+
+    char usage[64];
+    uint64_t fat_total = 0, fat_free = 0;
+    if (esp_vfs_fat_info(CLAW_STORAGE_MOUNT_POINT, &fat_total, &fat_free) == ESP_OK) {
+        format_storage(usage, sizeof(usage), fat_total,
+                       fat_total > fat_free ? fat_total - fat_free : 0);
+    } else {
+        strlcpy(usage, "--", sizeof(usage));
+    }
+    if (s_fat != NULL) {
+        lv_label_set_text(s_fat, usage);
     }
 }
 
@@ -241,6 +274,18 @@ static void sysinfo_create(lv_obj_t *content)
     lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
     module_cells(grid);
 
+    lv_obj_t *storage = lv_obj_create(panel);
+    lv_obj_set_pos(storage, 20, 240);
+    lv_obj_set_size(storage, UI_PAGE_W - 40, 22);
+    lv_obj_set_style_bg_opa(storage, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(storage, 0, 0);
+    lv_obj_set_style_pad_all(storage, 0, 0);
+    lv_obj_remove_flag(storage, LV_OBJ_FLAG_SCROLLABLE);
+    ui_label_create(storage, i18n_str(STR_SYS_STORAGE), 0, 3,
+                    UI_COLOR_MUTED, UI_FONT_SMALL);
+    ui_label_create(storage, "FAT", 100, 3, UI_COLOR_DISABLED, UI_FONT_SMALL);
+    s_fat = ui_label_create(storage, "-", 140, 3, UI_COLOR_TEXT, UI_FONT_SMALL);
+
     char info[128];
     uint8_t mac[6] = { 0 };
     esp_efuse_mac_get_default(mac);
@@ -263,6 +308,7 @@ static void sysinfo_destroy(void)
     }
     s_root = NULL;
     s_ready = s_heap = s_psram = s_uptime = NULL;
+    s_fat = NULL;
     s_ready_bar = s_heap_bar = s_psram_bar = NULL;
     for (int i = 0; i < HW_MODULE_COUNT; i++) {
         s_mod_badge[i] = NULL;

@@ -53,24 +53,6 @@ void McpServer::AddCommonTools()
                 return true;
             });
 
-    AddTool("self.home.turn_on",
-            "Turn the demo switch on the Home page ON. Use this when the user asks to open/turn on the home switch.",
-            PropertyList(),
-            [](const PropertyList &) -> ReturnValue {
-                settings_set_demo(true);
-                ESP_LOGI(TAG, "home demo switch=1 now=%d", settings_get()->demo ? 1 : 0);
-                return std::string(settings_get()->demo ? "on" : "off");
-            });
-
-    AddTool("self.home.turn_off",
-            "Turn the demo switch on the Home page OFF. Use this when the user asks to close/turn off the home switch.",
-            PropertyList(),
-            [](const PropertyList &) -> ReturnValue {
-                settings_set_demo(false);
-                ESP_LOGI(TAG, "home demo switch=0 now=%d", settings_get()->demo ? 1 : 0);
-                return std::string(settings_get()->demo ? "on" : "off");
-            });
-
     AddTool("self.screen.set_brightness",
             "Set the screen brightness.",
             PropertyList({
@@ -207,6 +189,7 @@ void McpServer::GetToolsList(int id)
 void McpServer::DoToolCall(int id, const std::string &tool_name,
                            const cJSON *tool_arguments)
 {
+    ESP_LOGI(TAG, "tool call: %s (id=%d)", tool_name.c_str(), id);
     auto it = std::find_if(tools_.begin(), tools_.end(), [&tool_name](const McpTool *tool) {
         return tool->name() == tool_name;
     });
@@ -243,7 +226,9 @@ void McpServer::DoToolCall(int id, const std::string &tool_name,
     }
 
     try {
-        ReplyResult(id, (*it)->Call(arguments));
+        std::string result = (*it)->Call(arguments);
+        ESP_LOGI(TAG, "tool result: %s -> %.160s", tool_name.c_str(), result.c_str());
+        ReplyResult(id, result);
     } catch (const std::exception &e) {
         ReplyError(id, e.what());
     }

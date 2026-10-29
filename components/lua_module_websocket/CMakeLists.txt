@@ -1,0 +1,14 @@
+idf_component_register(
+    SRCS
+        "src/lua_module_websocket.c"
+    INCLUDE_DIRS
+        "src"
+    REQUIRES
+        cap_lua
+        lua_net_common
+        esp_websocket_client
+        esp-tls
+        mbedtls
+        esp_timer
+        freertos
+)

@@ -5,7 +5,7 @@
 
 
 
-| :1234: [CAPABILITIES](#1234-capabilities) | :floppy_disk: [SD CARD AND SPIFFS](#floppy_disk-sd-card-and-spiffs) | :musical_note: [AUDIO](#musical_note-audio) | :pager: [DISPLAY AND TOUCH](#pager-display-and-touch) | :electric_plug: [USB](#electric_plug-usb) | :camera: [CAMERA](#camera-camera) | 
+| :1234: [CAPABILITIES](#1234-capabilities) | :floppy_disk: [SD CARD](#floppy_disk-sd-card) | :musical_note: [AUDIO](#musical_note-audio) | :pager: [DISPLAY AND TOUCH](#pager-display-and-touch) | :electric_plug: [USB](#electric_plug-usb) | :camera: [CAMERA](#camera-camera) | 
 | :-------------------------: | :-------------------------: | :-------------------------: | :-------------------------: | :-------------------------: | :-------------------------: | 
 
 </div>
@@ -241,21 +241,7 @@ esp_err_t bsp_i2c_init (
 
 
 
-## :floppy_disk: SD Card and SPIFFS
-
-### SPIFFS Initialization / Deinitialization
-
-Each BSP provides a simple API for mounting and unmounting the SPI Flash File System (SPIFFS).
-
-```
-/* Mount SPIFFS to the virtual file system */
-bsp_spiffs_mount();
-
-/* ... perform file operations ... */
-
-/* Unmount SPIFFS from the virtual file system */
-bsp_spiffs_unmount();
-```
+## :floppy_disk: SD Card
 
 ### SD Card Initialization / Deinitialization
 
@@ -296,7 +282,7 @@ bsp_sdcard_sdspi_mount(&cfg)
 
 ### After Mounting
 
-Once the SD card or SPIFFS is mounted, you can use standard file I/O functions (`fopen`, `fread`, `fwrite`, `fclose`, etc.) provided by ESP-IDF's VFS (Virtual File System).
+Once the SD card is mounted, you can use standard file I/O functions (`fopen`, `fread`, `fwrite`, `fclose`, etc.) provided by ESP-IDF's VFS (Virtual File System).
 
 To print basic SD card information (after mounting), you can use:
 ```
@@ -307,7 +293,7 @@ sdmmc_card_print_info(stdout, sdcard);
 > [!TIP]
 > The bsp_sdcard_get_handle() function returns a pointer to the sdmmc_card_t structure, which contains detailed information about the connected SD card.
 
-### SD Card and SPIFFS API Reference
+### SD Card API Reference
 
 ## Structures and Types
 
@@ -328,8 +314,6 @@ sdmmc_card_print_info(stdout, sdcard);
 |  void | [**bsp\_sdcard\_sdspi\_get\_slot**](#function-bsp_sdcard_sdspi_get_slot) (const spi\_host\_device\_t spi\_host, sdspi\_device\_config\_t \*config) <br>_Get SD card SPI slot config._ |
 |  esp\_err\_t | [**bsp\_sdcard\_sdspi\_mount**](#function-bsp_sdcard_sdspi_mount) ([**bsp\_sdcard\_cfg\_t**](#struct-bsp_sdcard_cfg_t) \*cfg) <br>_Mount microSD card to virtual file system (SPI mode)_ |
 |  esp\_err\_t | [**bsp\_sdcard\_unmount**](#function-bsp_sdcard_unmount) (void) <br>_Unmount microSD card from virtual file system._ |
-|  esp\_err\_t | [**bsp\_spiffs\_mount**](#function-bsp_spiffs_mount) (void) <br>_Mount SPIFFS to virtual file system._ |
-|  esp\_err\_t | [**bsp\_spiffs\_unmount**](#function-bsp_spiffs_unmount) (void) <br>_Unmount SPIFFS from virtual file system._ |
 
 ## Macros
 
@@ -347,7 +331,6 @@ sdmmc_card_print_info(stdout, sdcard);
 | define  | [**BSP\_SD\_SPI\_CS**](#define-bsp_sd_spi_cs)  (GPIO\_NUM\_42)<br> |
 | define  | [**BSP\_SD\_SPI\_MISO**](#define-bsp_sd_spi_miso)  (GPIO\_NUM\_39)<br> |
 | define  | [**BSP\_SD\_SPI\_MOSI**](#define-bsp_sd_spi_mosi)  (GPIO\_NUM\_44)<br> |
-| define  | [**BSP\_SPIFFS\_MOUNT\_POINT**](#define-bsp_spiffs_mount_point)  CONFIG\_BSP\_SPIFFS\_MOUNT\_POINT<br> |
 
 
 ## Structures and Types Documentation
@@ -537,45 +520,6 @@ esp_err_t bsp_sdcard_unmount (
 * ESP\_ERR\_NO\_MEM if memory can not be allocated
 * ESP\_FAIL if partition can not be mounted
 * other error codes from wear levelling library, SPI flash driver, or FATFS drivers
-### function `bsp_spiffs_mount`
-
-_Mount SPIFFS to virtual file system._
-```c
-esp_err_t bsp_spiffs_mount (
-    void
-) 
-```
-
-
-**Returns:**
-
-
-
-* ESP\_OK on success
-* ESP\_ERR\_INVALID\_STATE if esp\_vfs\_spiffs\_register was already called
-* ESP\_ERR\_NO\_MEM if memory can not be allocated
-* ESP\_FAIL if partition can not be mounted
-* other error codes
-### function `bsp_spiffs_unmount`
-
-_Unmount SPIFFS from virtual file system._
-```c
-esp_err_t bsp_spiffs_unmount (
-    void
-) 
-```
-
-
-**Returns:**
-
-
-
-* ESP\_OK on success
-* ESP\_ERR\_NOT\_FOUND if the partition table does not contain SPIFFS partition with given label
-* ESP\_ERR\_INVALID\_STATE if esp\_vfs\_spiffs\_unregister was already called
-* ESP\_ERR\_NO\_MEM if memory can not be allocated
-* ESP\_FAIL if partition can not be mounted
-* other error codes
 
 
 

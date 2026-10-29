@@ -1,0 +1,72 @@
+{
+  "queries": [
+    {
+      "query": "给 ESP32-P4 面板做一个中文倒计时应用",
+      "should_trigger": true
+    },
+    {
+      "query": "设计一个 1024x600 的 LVGL Lua 游戏主界面",
+      "should_trigger": true
+    },
+    {
+      "query": "应用素材想放 SD 卡，没卡时也要能启动",
+      "should_trigger": true
+    },
+    {
+      "query": "帮我生成 launcher.json 和 App 包目录",
+      "should_trigger": true
+    },
+    {
+      "query": "中文按钮显示方框，帮我做字体子集",
+      "should_trigger": true
+    },
+    {
+      "query": "把 App 上传到面板并验证 SD fallback",
+      "should_trigger": true
+    },
+    {
+      "query": "做一个海报风格的启动器 App，带背景和角色立绘",
+      "should_trigger": true
+    },
+    {
+      "query": "改 ESP32-P4 的显示驱动或分区表",
+      "should_trigger": false
+    },
+    {
+      "query": "写一个设备侧 ESP-Claw Skill，让 Agent 调用",
+      "should_trigger": false
+    },
+    {
+      "query": "解释一下 LVGL 的 flex 布局怎么用（不涉及本面板）",
+      "should_trigger": false
+    },
+    {
+      "query": "做一个网页版的管理后台",
+      "should_trigger": false
+    },
+    {
+      "query": "只给我一段 Lua 冒泡排序代码",
+      "should_trigger": false
+    },
+    {
+      "query": "怎么在 ESP32-P4 上启用摄像头驱动",
+      "should_trigger": false
+    },
+    {
+      "query": "把 SD 卡格式化成 exFAT",
+      "should_trigger": false
+    },
+    {
+      "query": "帮我写一个 Claude Code 的 skill（不针对这个面板）",
+      "should_trigger": false
+    },
+    {
+      "query": "面板 App 要连 MQTT 服务器上报状态，断线自动重连",
+      "should_trigger": true
+    },
+    {
+      "query": "App 通过 TCP 连我的内网服务器收发数据，界面不能卡",
+      "should_trigger": true
+    }
+  ]
+}

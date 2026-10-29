@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "app_id": "sd_fallback",
+  "assets": [
+    {
+      "role": "background",
+      "layer": "L0",
+      "sd": "img/bg.jpg",
+      "kind": "jpeg",
+      "width": 1024,
+      "height": 600,
+      "fallback": "assets/img/bg_fallback.jpg",
+      "fallback_bytes": 7419,
+      "bytes": 19486
+    },
+    {
+      "role": "sigil",
+      "layer": "L1",
+      "sd": "img/sigil.argb",
+      "kind": "argb8888",
+      "width": 180,
+      "height": 180,
+      "fallback": "assets/img/sigil_fallback.jpg",
+      "fallback_bytes": 7983,
+      "bytes": 129600
+    }
+  ]
+}

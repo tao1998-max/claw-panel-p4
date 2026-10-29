@@ -2,8 +2,10 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "ai.h"
+#include "cap_scheduler.h"
 #include "esp_system.h"
 #include "hw.h"
 #include "i18n.h"
@@ -93,6 +95,13 @@ static bool s_wifi_last_running;
 static lv_obj_t *s_slider_value;
 static lv_obj_t *s_off_chip_label;
 
+/* 系统页：时间设置 */
+static lv_obj_t *s_time_value;
+static lv_obj_t *s_time_scrim;
+static lv_obj_t *s_time_hint;
+static lv_obj_t *s_time_rollers[5];
+static void time_dialog_close(void);
+
 /* 小智 AI 页 */
 static lv_timer_t *s_ai_timer;
 static lv_obj_t *s_ai_status;
@@ -138,6 +147,185 @@ static lv_obj_t *category_badge(lv_obj_t *parent, int x, int y, int size, int ca
     }
 #endif
     return badge;
+}
+
+
+/* ---------------- 时间设置 ---------------- */
+
+static void time_value_update(void)
+{
+    if (s_time_value == NULL) {
+        return;
+    }
+    time_t now = time(NULL);
+    struct tm tm_now = {0};
+    if (now <= (time_t)1600000000LL || localtime_r(&now, &tm_now) == NULL) {
+        lv_label_set_text(s_time_value, "--");
+        return;
+    }
+    lv_label_set_text_fmt(s_time_value, "%04d-%02d-%02d %02d:%02d:%02d",
+                          tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
+                          tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
+}
+
+static void system_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    if (s_cat != CAT_SYSTEM || s_body == NULL || !lv_obj_is_visible(s_body)) {
+        return;
+    }
+    time_value_update();
+}
+
+static void fill_number_options(char *buf, size_t size, int min, int max, int width)
+{
+    size_t offset = 0;
+    for (int value = min; value <= max && offset < size; value++) {
+        int written = snprintf(buf + offset, size - offset, "%0*d%s",
+                               width, value, value == max ? "" : "\n");
+        if (written < 0 || (size_t)written >= size - offset) {
+            break;
+        }
+        offset += (size_t)written;
+    }
+    buf[size - 1] = '\0';
+}
+
+static lv_obj_t *time_roller_create(lv_obj_t *parent, int x, const char *label,
+                                    const char *options, int selected)
+{
+    lv_obj_t *title = ui_label_create(parent, label, x, 82,
+                                      UI_COLOR_DISABLED, UI_FONT_SMALL);
+    lv_obj_set_width(title, 132);
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+
+    lv_obj_t *roller = lv_roller_create(parent);
+    lv_obj_set_pos(roller, x, 108);
+    lv_obj_set_size(roller, 132, 156);
+    lv_roller_set_options(roller, options, LV_ROLLER_MODE_NORMAL);
+    lv_roller_set_visible_row_count(roller, 3);
+    lv_roller_set_selected(roller, (uint16_t)(selected < 0 ? 0 : selected),
+                           LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(roller, lv_color_hex(UI_COLOR_TILE), 0);
+    lv_obj_set_style_bg_opa(roller, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(roller, lv_color_hex(UI_COLOR_BORDER), 0);
+    lv_obj_set_style_border_width(roller, 1, 0);
+    lv_obj_set_style_radius(roller, UI_RADIUS, 0);
+    lv_obj_set_style_text_color(roller, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(roller, UI_FONT_BODY, 0);
+    lv_obj_set_style_bg_color(roller, lv_color_hex(UI_COLOR_ACCENT_DEEP), LV_PART_SELECTED);
+    lv_obj_set_style_text_color(roller, lv_color_hex(UI_COLOR_TEXT), LV_PART_SELECTED);
+    lv_obj_set_style_border_width(roller, 0, LV_PART_SELECTED);
+    lv_obj_set_style_radius(roller, UI_RADIUS_S, LV_PART_SELECTED);
+    return roller;
+}
+
+static void time_dialog_close(void)
+{
+    if (s_time_scrim != NULL) {
+        lv_obj_delete(s_time_scrim);
+        s_time_scrim = NULL;
+    }
+    s_time_hint = NULL;
+    for (int i = 0; i < 5; i++) {
+        s_time_rollers[i] = NULL;
+    }
+}
+
+static void time_cancel_cb(lv_event_t *e)
+{
+    (void)e;
+    time_dialog_close();
+}
+
+static void time_save_cb(lv_event_t *e)
+{
+    (void)e;
+    int year = 2000 + (int)lv_roller_get_selected(s_time_rollers[0]);
+    int month = 1 + (int)lv_roller_get_selected(s_time_rollers[1]);
+    int day = 1 + (int)lv_roller_get_selected(s_time_rollers[2]);
+    int hour = (int)lv_roller_get_selected(s_time_rollers[3]);
+    int minute = (int)lv_roller_get_selected(s_time_rollers[4]);
+
+    if (hw_rtc_set_datetime(year, month, day, hour, minute, 0) != ESP_OK) {
+        if (s_time_hint != NULL) {
+            lv_label_set_text(s_time_hint, i18n_str(STR_TIME_INVALID));
+            lv_obj_set_style_text_color(s_time_hint, lv_color_hex(UI_COLOR_ERROR), 0);
+        }
+        return;
+    }
+    (void)cap_scheduler_handle_time_sync();
+    time_value_update();
+    ui_shell_refresh_chrome();
+    time_dialog_close();
+}
+
+static void time_set_click(lv_event_t *e)
+{
+    (void)e;
+    if (s_time_scrim != NULL) {
+        return;
+    }
+
+    time_t now = time(NULL);
+    struct tm tm_now = {0};
+    if (now <= (time_t)1600000000LL || localtime_r(&now, &tm_now) == NULL) {
+        memset(&tm_now, 0, sizeof(tm_now));
+        tm_now.tm_year = 126; /* 2026-01-01 00:00 */
+        tm_now.tm_mon = 0;
+        tm_now.tm_mday = 1;
+    }
+
+    s_time_scrim = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(s_time_scrim, UI_SCREEN_W, UI_SCREEN_H);
+    lv_obj_set_pos(s_time_scrim, 0, 0);
+    lv_obj_set_style_bg_color(s_time_scrim, lv_color_hex(UI_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(s_time_scrim, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(s_time_scrim, 0, 0);
+    lv_obj_set_style_radius(s_time_scrim, 0, 0);
+    lv_obj_set_style_pad_all(s_time_scrim, 0, 0);
+    lv_obj_remove_flag(s_time_scrim, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_time_scrim, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *box = ui_card_create(s_time_scrim, 0, 0, 760, 430);
+    lv_obj_center(box);
+
+    ui_badge_create(box, 20, 20, 36, LV_SYMBOL_SETTINGS, UI_COLOR_ACCENT);
+    ui_label_create(box, i18n_str(STR_SET_TIME), 64, 24, UI_COLOR_TEXT, UI_FONT_BODY);
+    s_time_hint = ui_label_create(box, "YYYY-MM-DD  HH:MM", 30, 366,
+                                  UI_COLOR_DISABLED, UI_FONT_SMALL);
+    lv_obj_set_width(s_time_hint, 700);
+    lv_obj_set_style_text_align(s_time_hint, LV_TEXT_ALIGN_CENTER, 0);
+
+    static char year_opts[512];
+    static char month_opts[64];
+    static char day_opts[128];
+    static char hour_opts[128];
+    static char minute_opts[256];
+    fill_number_options(year_opts, sizeof(year_opts), 2000, 2099, 4);
+    fill_number_options(month_opts, sizeof(month_opts), 1, 12, 2);
+    fill_number_options(day_opts, sizeof(day_opts), 1, 31, 2);
+    fill_number_options(hour_opts, sizeof(hour_opts), 0, 23, 2);
+    fill_number_options(minute_opts, sizeof(minute_opts), 0, 59, 2);
+
+    int xs[5] = { 30, 172, 314, 456, 598 };
+    s_time_rollers[0] = time_roller_create(box, xs[0], "YYYY", year_opts,
+                                           tm_now.tm_year + 1900 - 2000);
+    s_time_rollers[1] = time_roller_create(box, xs[1], "MM", month_opts,
+                                           tm_now.tm_mon);
+    s_time_rollers[2] = time_roller_create(box, xs[2], "DD", day_opts,
+                                           tm_now.tm_mday - 1);
+    s_time_rollers[3] = time_roller_create(box, xs[3], "HH", hour_opts,
+                                           tm_now.tm_hour);
+    s_time_rollers[4] = time_roller_create(box, xs[4], "MIN", minute_opts,
+                                           tm_now.tm_min);
+
+    lv_obj_t *cancel = ui_button_create(box, i18n_str(STR_BTN_CANCEL),
+                                        210, 300, 160, 48, 0);
+    lv_obj_add_event_cb(cancel, time_cancel_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *save = ui_button_create(box, i18n_str(STR_BTN_CONFIRM),
+                                      390, 300, 160, 48, 1);
+    lv_obj_add_event_cb(save, time_save_cb, LV_EVENT_CLICKED, NULL);
 }
 
 /* ---------------- 左侧分类栏 ---------------- */
@@ -592,7 +780,26 @@ static void build_network(lv_obj_t *body)
 
 static void build_system(lv_obj_t *body)
 {
-    lv_obj_t *card = ui_card_create(body, 0, 0, INNER_W, 112);
+    lv_obj_add_flag(body, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(body, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_pad_bottom(body, 16, 0);
+
+    lv_obj_t *time_card = ui_card_create(body, 0, 0, INNER_W, 112);
+    card_title(time_card, STR_SET_TIME);
+    ui_label_create(time_card, i18n_str(STR_SET_TIME_CURRENT), CARD_PAD, 52,
+                    UI_COLOR_MUTED, UI_FONT_SMALL);
+    s_time_value = ui_label_create(time_card, "--", 120, 46,
+                                   UI_COLOR_TEXT, UI_FONT_BODY);
+    lv_obj_t *set_time = ui_button_create(time_card, i18n_str(STR_SET_TIME_BUTTON),
+                                          INNER_W - 200, 44, 180, 44, 1);
+    lv_obj_add_event_cb(set_time, time_set_click, LV_EVENT_CLICKED, NULL);
+    time_value_update();
+    if (s_timer == NULL) {
+        s_timer = lv_timer_create(system_timer_cb, 1000, NULL);
+    }
+
+    lv_obj_t *card = ui_card_create(body, 0, 122, INNER_W, 112);
     card_title(card, STR_SET_LANGUAGE);
 
     const char *langs[2] = { i18n_str(STR_LANG_ZH), i18n_str(STR_LANG_EN) };
@@ -601,7 +808,7 @@ static void build_system(lv_obj_t *body)
     lv_obj_add_event_cb(seg, language_event, LV_EVENT_VALUE_CHANGED, NULL);
 
     /* 版本信息：两行浅色信息，不抢主设置的视觉 */
-    lv_obj_t *about = ui_card_create(body, 0, 122, INNER_W, 66);
+    lv_obj_t *about = ui_card_create(body, 0, 244, INNER_W, 66);
     ui_badge_create(about, 18, 17, 32, LV_SYMBOL_LIST, UI_COLOR_VIOLET);
 
     char fw[80];
@@ -613,7 +820,7 @@ static void build_system(lv_obj_t *body)
     ui_label_create(about, board, 62, 36, UI_COLOR_DISABLED, UI_FONT_SMALL);
 
     /* 危险操作：红色浅底 + 明确的确认弹层 */
-    lv_obj_t *danger = ui_card_create(body, 0, 198, INNER_W, 84);
+    lv_obj_t *danger = ui_card_create(body, 0, 320, INNER_W, 84);
     lv_obj_set_style_bg_color(danger, lv_color_hex(UI_COLOR_ERROR), 0);
     lv_obj_set_style_bg_grad_dir(danger, LV_GRAD_DIR_NONE, 0);
     lv_obj_set_style_bg_opa(danger, 18, 0);
@@ -937,8 +1144,10 @@ static void build_detail(void)
     if (s_detail == NULL) {
         return;
     }
+    time_dialog_close();
     lv_obj_clean(s_detail);
     s_body = NULL;
+    s_time_value = NULL;
     s_wifi_name = NULL;
     s_wifi_state = NULL;
     s_wifi_ip = NULL;
@@ -1157,6 +1366,8 @@ static void settings_destroy(void)
     ai_url_close();
 #endif
     pass_close();
+    time_dialog_close();
+    s_time_value = NULL;
     s_content = NULL;
     s_detail = NULL;
     s_body = NULL;

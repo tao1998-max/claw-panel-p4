@@ -1,0 +1,21 @@
+idf_component_register(
+    SRCS
+        "src/lua_module_net.c"
+        "src/lua_net_core.c"
+        "src/lua_net_tcp.c"
+        "src/lua_net_udp.c"
+        "src/lua_net_dns.c"
+        "src/lua_net_http.c"
+    INCLUDE_DIRS
+        "src"
+    REQUIRES
+        cap_lua
+        lua_net_common
+        lwip
+        esp-tls
+        mbedtls
+        esp_netif
+        esp_http_client
+        esp_timer
+        freertos
+)

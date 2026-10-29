@@ -1,8 +1,9 @@
 ﻿# Name,   Type, SubType, Offset,  Size, Flags
-# 16MB flash: bootloader/table/NVS/phy/otadata + two 5.9375MB OTA app slots + 4MB storage
+# 16MB flash: bootloader/table/NVS/phy/otadata + two 5.9375MB OTA app slots
+# + one 4MB FAT (0xC00000-0x1000000): /fatfs/ai assets + /fatfs/claw workspace
 nvs,      data, nvs,     0x9000,  0x6000,
 phy_init, data, phy,     0xf000,  0x1000,
 otadata,  data, ota,     0x10000, 0x2000,
 ota_0,    app,  ota_0,   0x20000, 0x5f0000,
 ota_1,    app,  ota_1,   0x610000,0x5f0000,
-storage,  data, spiffs,  0xc00000,0x400000,
+claw,     data, fat,     0xc00000,0x400000,

@@ -81,6 +81,20 @@ void ui_segmented_set_selected(lv_obj_t *seg, int index);
 /* 二次确认弹层：铺满 parent，点确认先回调 on_confirm 再关闭；点取消直接关闭 */
 void ui_confirm_create(lv_obj_t *parent, const char *text, lv_event_cb_t on_confirm);
 
+/* 单行文本弹窗（屏幕级）：确认回调返回 false 表示输入不合法，弹窗保持打开。
+ * 中文输入受限（键盘只有英文），调用方自行给出提示。 */
+typedef bool (*ui_text_done_cb_t)(const char *text);
+void ui_text_dialog_open(const char *title, const char *hint, const char *value,
+                         bool password, ui_text_done_cb_t done);
+void ui_text_dialog_close(void);
+
+/* 长文本/代码查看器（屏幕级，可滚动）。text 在关闭前必须保持有效；
+ * on_close 在弹层销毁时调用，可用来释放 text（例如 PSRAM 缓冲）。 */
+typedef void (*ui_text_view_close_cb_t)(void);
+void ui_text_view_open(const char *title, const char *text,
+                       const lv_font_t *font, ui_text_view_close_cb_t on_close);
+void ui_text_view_close(void);
+
 /* 进场动画：只改 translate，不做透明度混合，整页移动也很便宜。
  * - slide_in：从右侧 from_x 像素滑入，300 ms easeOutCubic（切页用）
  * - rise_in：从下方 16 px 托起，280 ms easeOutCubic（设置页切分类用） */

@@ -77,6 +77,9 @@ esp_err_t hw_rs485_init(void);
 esp_err_t hw_eth_init(void);
 esp_err_t hw_camera_init(void);
 esp_err_t hw_wifi_init(void);
+esp_err_t hw_rtc_init(void);
+esp_err_t hw_rtc_set_from_system(void);
+esp_err_t hw_rtc_set_datetime(int year, int month, int day, int hour, int minute, int second);
 
 /* ---------- 运行期控制 ---------- */
 void hw_audio_set_volume(int percent);

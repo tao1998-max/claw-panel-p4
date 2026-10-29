@@ -692,6 +692,11 @@ static void auto_close_cancel(void)
     }
 }
 
+const lv_font_t *ai_ui_text_font(void)
+{
+    return s_chat_font;
+}
+
 void ai_ui_init(void)
 {
     if (!ai_available()) return;

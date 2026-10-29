@@ -21,6 +21,8 @@
 #include "bsp/config.h"
 #include "bsp/display.h"
 #include "esp_codec_dev.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_touch.h"
 #include "sdkconfig.h"
 
 #if (BSP_CONFIG_NO_GRAPHIC_LIB == 0)
@@ -107,8 +109,8 @@
 #define BSP_CAMERA_RST       (GPIO_NUM_NC)
 /** @} */ // end of camera
 
-/** @defgroup g02_storage SD Card and SPIFFS
- *  @brief SPIFFS and SD card BSP API
+/** @defgroup g02_storage SD Card
+ *  @brief SD card BSP API
  *  @{
  */
 /* uSD card MMC */
@@ -198,7 +200,7 @@ i2c_master_bus_handle_t bsp_i2c_get_handle(void);
  * \code{.c}
  * esp_codec_dev_set_out_vol(spk_codec_dev, DEFAULT_VOLUME);
  * esp_codec_dev_open(spk_codec_dev, &fs);
- * esp_codec_dev_write(spk_codec_dev, wav_bytes, bytes_read_from_spiffs);
+ * esp_codec_dev_write(spk_codec_dev, wav_bytes, bytes_read_from_file);
  * esp_codec_dev_close(spk_codec_dev);
  * \endcode
  **************************************************************************************************/
@@ -238,44 +240,6 @@ esp_codec_dev_handle_t bsp_audio_codec_microphone_init(void);
 /** \addtogroup g02_storage
  *  @{
  */
-
-/**************************************************************************************************
- *
- * SPIFFS
- *
- * After mounting the SPIFFS, it can be accessed with stdio functions ie.:
- * \code{.c}
- * FILE* f = fopen(BSP_SPIFFS_MOUNT_POINT"/hello.txt", "w");
- * fprintf(f, "Hello World!\n");
- * fclose(f);
- * \endcode
- **************************************************************************************************/
-#define BSP_SPIFFS_MOUNT_POINT      CONFIG_BSP_SPIFFS_MOUNT_POINT
-
-/**
- * @brief Mount SPIFFS to virtual file system
- *
- * @return
- *      - ESP_OK on success
- *      - ESP_ERR_INVALID_STATE if esp_vfs_spiffs_register was already called
- *      - ESP_ERR_NO_MEM if memory can not be allocated
- *      - ESP_FAIL if partition can not be mounted
- *      - other error codes
- */
-esp_err_t bsp_spiffs_mount(void);
-
-/**
- * @brief Unmount SPIFFS from virtual file system
- *
- * @return
- *      - ESP_OK on success
- *      - ESP_ERR_NOT_FOUND if the partition table does not contain SPIFFS partition with given label
- *      - ESP_ERR_INVALID_STATE if esp_vfs_spiffs_unregister was already called
- *      - ESP_ERR_NO_MEM if memory can not be allocated
- *      - ESP_FAIL if partition can not be mounted
- *      - other error codes
- */
-esp_err_t bsp_spiffs_unmount(void);
 
 /**************************************************************************************************
  *
@@ -484,6 +448,26 @@ lv_indev_t *bsp_display_get_input_dev(void);
  * @return true  Mutex was taken
  * @return false Mutex was NOT taken
  */
+/**
+ * @brief Get the LCD panel handle created by the BSP.
+ *
+ * The handle is owned by the BSP; callers must not delete it. It is intended
+ * for product-level raw display sessions that temporarily pause LVGL.
+ */
+esp_lcd_panel_handle_t bsp_display_get_panel_handle(void);
+
+/**
+ * @brief Get the touch handle created by the BSP.
+ *
+ * The handle is owned by the BSP; callers must not delete it.
+ */
+esp_lcd_touch_handle_t bsp_display_get_touch_handle(void);
+
+/**
+ * @brief Get the LVGL display created by the BSP.
+ */
+lv_display_t *bsp_display_get_lvgl_display(void);
+
 bool bsp_display_lock(uint32_t timeout_ms);
 
 /**

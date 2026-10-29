@@ -4,9 +4,11 @@
 
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#include "claw_port.h"
 #include "hw.h"
 #include "i18n.h"
 
@@ -31,6 +33,19 @@ static sys_settings_t s_cfg = {
     .demo = 0,
     .screen_off_s = DEF_SCREEN_OFF,
 };
+
+/*
+ * Brightness/volume can be changed several times per second by Lua scripts
+ * (e.g. the panel demo dims and restores the screen). Writing NVS on every
+ * step disables the flash cache repeatedly, which stalls LVGL and audio and
+ * wears the flash. Apply immediately, then persist once the value settles.
+ */
+#define SETTINGS_PERSIST_DELAY_MS 1500
+
+static esp_timer_handle_t s_persist_timer;
+static uint8_t s_saved_brightness = DEF_BRIGHTNESS;
+static uint8_t s_saved_volume = DEF_VOLUME;
+static uint8_t s_saved_demo = 0;
 
 /* ---------------- 取值校验：NVS 里的脏数据不能让硬件跑到非法区间 ---------------- */
 
@@ -100,6 +115,43 @@ static void write_u8(const char *key, uint8_t value)
 }
 
 /* 息屏时间是 300 秒这种 >255 的值，必须用 u16 存 */
+static void persist_timer_cb(void *arg)
+{
+    (void)arg;
+    if (s_cfg.brightness != s_saved_brightness) {
+        write_u8(KEY_BRIGHTNESS, s_cfg.brightness);
+        s_saved_brightness = s_cfg.brightness;
+    }
+    if (s_cfg.volume != s_saved_volume) {
+        write_u8(KEY_VOLUME, s_cfg.volume);
+        s_saved_volume = s_cfg.volume;
+    }
+    if (s_cfg.demo != s_saved_demo) {
+        write_u8(KEY_DEMO, s_cfg.demo);
+        s_saved_demo = s_cfg.demo;
+    }
+}
+
+static void schedule_persist(void)
+{
+    if (s_persist_timer == NULL) {
+        const esp_timer_create_args_t args = {
+            .callback = persist_timer_cb,
+            .arg = NULL,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "settings_save",
+            .skip_unhandled_events = true,
+        };
+        if (esp_timer_create(&args, &s_persist_timer) != ESP_OK) {
+            /* Fall back to an immediate write if the timer cannot be created. */
+            persist_timer_cb(NULL);
+            return;
+        }
+    }
+    esp_timer_stop(s_persist_timer);
+    esp_timer_start_once(s_persist_timer, (uint64_t)SETTINGS_PERSIST_DELAY_MS * 1000);
+}
+
 static uint16_t read_u16(nvs_handle_t h, const char *key, uint16_t def)
 {
     uint16_t v = def;
@@ -145,6 +197,9 @@ esp_err_t settings_init(void)
     s_cfg.demo = read_u8(h, KEY_DEMO, 0) ? 1 : 0;
     s_cfg.screen_off_s = clamp_screen_off(read_u16(h, KEY_SCREEN_OFF, DEF_SCREEN_OFF));
     nvs_close(h);
+    s_saved_brightness = s_cfg.brightness;
+    s_saved_volume = s_cfg.volume;
+    s_saved_demo = s_cfg.demo;
 
     i18n_set_lang((i18n_lang_t)s_cfg.lang);
 
@@ -175,7 +230,7 @@ void settings_set_brightness(int percent)
     }
     s_cfg.brightness = v;
     hw_display_set_brightness(v);
-    write_u8(KEY_BRIGHTNESS, v);
+    schedule_persist();
 }
 
 void settings_set_volume(int percent)
@@ -186,7 +241,7 @@ void settings_set_volume(int percent)
     }
     s_cfg.volume = v;
     hw_audio_set_volume(v);
-    write_u8(KEY_VOLUME, v);
+    schedule_persist();
 }
 
 void settings_preview_brightness(int percent)
@@ -227,12 +282,20 @@ void settings_set_demo(bool on)
         return;
     }
     s_cfg.demo = v;
-    write_u8(KEY_DEMO, v);
+    schedule_persist();
 }
 
 void settings_factory_reset(void)
 {
     ESP_LOGW(TAG, "factory reset requested, erasing NVS");
+    if (s_persist_timer != NULL) {
+        esp_timer_stop(s_persist_timer);
+    }
+    /* 先清 Claw 用户数据（脚本/计划/Agent 记忆），再擦 NVS。 */
+    esp_err_t claw_err = claw_port_factory_reset();
+    if (claw_err != ESP_OK) {
+        ESP_LOGW(TAG, "Claw workspace reset failed: %s", esp_err_to_name(claw_err));
+    }
     nvs_flash_erase();
     esp_restart();
 }

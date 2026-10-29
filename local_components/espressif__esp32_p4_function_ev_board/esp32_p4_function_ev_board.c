@@ -10,7 +10,6 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_check.h"
-#include "esp_spiffs.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_ldo_regulator.h"
@@ -38,7 +37,10 @@ static const char *TAG = "ESP32_P4_EV";
 
 #if (BSP_CONFIG_NO_GRAPHIC_LIB == 0)
 static lv_indev_t *disp_indev = NULL;
+static lv_display_t *disp_lvgl = NULL;
 #endif // (BSP_CONFIG_NO_GRAPHIC_LIB == 0)
+static esp_lcd_panel_handle_t disp_panel_handle = NULL;
+static esp_lcd_touch_handle_t disp_touch_handle = NULL;
 
 sdmmc_card_t *bsp_sdcard = NULL;    // Global uSD card handler
 static bool i2c_initialized = false;
@@ -151,39 +153,6 @@ esp_err_t bsp_sdcard_mount(void)
 esp_err_t bsp_sdcard_unmount(void)
 {
     return esp_vfs_fat_sdcard_unmount(BSP_SD_MOUNT_POINT, bsp_sdcard);
-}
-
-esp_err_t bsp_spiffs_mount(void)
-{
-    esp_vfs_spiffs_conf_t conf = {
-        .base_path = CONFIG_BSP_SPIFFS_MOUNT_POINT,
-        .partition_label = CONFIG_BSP_SPIFFS_PARTITION_LABEL,
-        .max_files = CONFIG_BSP_SPIFFS_MAX_FILES,
-#ifdef CONFIG_BSP_SPIFFS_FORMAT_ON_MOUNT_FAIL
-        .format_if_mount_failed = true,
-#else
-        .format_if_mount_failed = false,
-#endif
-    };
-
-    esp_err_t ret_val = esp_vfs_spiffs_register(&conf);
-
-    BSP_ERROR_CHECK_RETURN_ERR(ret_val);
-
-    size_t total = 0, used = 0;
-    ret_val = esp_spiffs_info(conf.partition_label, &total, &used);
-    if (ret_val != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to get SPIFFS partition information (%s)", esp_err_to_name(ret_val));
-    } else {
-        ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
-    }
-
-    return ret_val;
-}
-
-esp_err_t bsp_spiffs_unmount(void)
-{
-    return esp_vfs_spiffs_unregister(CONFIG_BSP_SPIFFS_PARTITION_LABEL);
 }
 
 esp_err_t bsp_audio_init(const i2s_std_config_t *i2s_config)
@@ -683,6 +652,7 @@ static lv_display_t *bsp_display_lcd_init(const bsp_display_cfg_t *cfg)
     assert(cfg != NULL);
     bsp_lcd_handles_t lcd_panels;
     BSP_ERROR_CHECK_RETURN_NULL(bsp_display_new_with_handles(NULL, &lcd_panels));
+    disp_panel_handle = lcd_panels.panel;
 
     /* Add LCD screen */
     ESP_LOGD(TAG, "Add LCD screen");
@@ -745,6 +715,7 @@ static lv_indev_t *bsp_display_indev_init(lv_display_t *disp)
     esp_lcd_touch_handle_t tp;
     BSP_ERROR_CHECK_RETURN_NULL(bsp_touch_new(NULL, &tp));
     assert(tp);
+    disp_touch_handle = tp;
 
     /* Add touch input (for selected screen) */
     const lvgl_port_touch_cfg_t touch_cfg = {
@@ -759,6 +730,8 @@ lv_display_t *bsp_display_start(void)
 {
     bsp_display_cfg_t cfg = {
         .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
+        /* 25 lines keeps the draw/rotate buffers small; the panel still
+         * refreshes at 30 fps and internal RAM stays available for Claw. */
         .buffer_size = BSP_LCD_DRAW_BUFF_SIZE,
         .double_buffer = BSP_LCD_DRAW_BUFF_DOUBLE,
         .flags = {
@@ -767,7 +740,10 @@ lv_display_t *bsp_display_start(void)
 #else
             .buff_dma = true,
 #endif
-            .buff_spiram = false,
+            /* P4 can DMA from PSRAM. Keeping the 2 x 50-line draw/rotate
+             * buffers out of internal RAM frees ~200 KB for the Agent, Wi-Fi
+             * and audio stacks. */
+            .buff_spiram = true,
             .sw_rotate = true,
         }
     };
@@ -784,6 +760,7 @@ lv_display_t *bsp_display_start_with_config(const bsp_display_cfg_t *cfg)
     BSP_ERROR_CHECK_RETURN_NULL(bsp_display_brightness_init());
 
     BSP_NULL_CHECK(disp = bsp_display_lcd_init(cfg), NULL);
+    disp_lvgl = disp;
     // bsp_display_lock(-1);
     // lv_disp_set_rotation(disp,LV_DISPLAY_ROTATION_90);
     // bsp_display_unlock();
@@ -796,6 +773,21 @@ lv_display_t *bsp_display_start_with_config(const bsp_display_cfg_t *cfg)
 lv_indev_t *bsp_display_get_input_dev(void)
 {
     return disp_indev;
+}
+
+esp_lcd_panel_handle_t bsp_display_get_panel_handle(void)
+{
+    return disp_panel_handle;
+}
+
+esp_lcd_touch_handle_t bsp_display_get_touch_handle(void)
+{
+    return disp_touch_handle;
+}
+
+lv_display_t *bsp_display_get_lvgl_display(void)
+{
+    return disp_lvgl;
 }
 
 void bsp_display_rotate(lv_display_t *disp, lv_disp_rotation_t rotation)

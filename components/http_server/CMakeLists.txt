@@ -1,0 +1,48 @@
+set(http_server_srcs
+    "http_server_core.c"
+    "http_server_assets.c"
+    "http_server_capabilities_api.c"
+    "http_server_config_api.c"
+    "http_server_lua_modules_api.c"
+    "http_server_lua_app_api.c"
+    "http_server_status_api.c"
+    "http_server_storage_api.c"
+    "http_server_sd_assets_api.c"
+    "http_server_files_api.c"
+    "http_server_wechat_api.c"
+    "http_server_webim_api.c"
+    "http_server_webim_sessions.c"
+    "http_server_schedules_api.c"
+    "http_server_json.c"
+    "http_server_utils.c"
+)
+
+idf_component_register(
+    SRCS
+        ${http_server_srcs}
+    INCLUDE_DIRS
+        "include"
+    EMBED_FILES
+        "index.html.gz"
+        "favicon.ico"
+    REQUIRES
+        app_config
+        esp_http_server
+        json
+        heap
+        freertos
+        esp_timer
+        fatfs
+        claw_cap
+        cap_lua
+        lua_module_http_server
+        claw_manager
+        claw_memory
+        claw_event_router
+        cap_im_local
+        cap_scheduler
+)
+
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_LIST_DIR}/index.html.gz")
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-missing-field-initializers)

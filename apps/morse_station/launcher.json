@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "id": "morse_station",
+  "display_name": "摩尔斯电码站",
+  "entry": "scripts/main.lua",
+  "args": {},
+  "order": 20,
+  "visible": true
+}

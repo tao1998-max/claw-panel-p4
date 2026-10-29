@@ -1565,13 +1565,6 @@ static void zoom_build(lv_obj_t *win, int x)
 
 static void history_create(lv_obj_t *content)
 {
-    static bool s_tz_done;
-    if (!s_tz_done) {
-        s_tz_done = true;
-        setenv("TZ", "CST-8", 1);   /* 中国标准时间 UTC+8 */
-        tzset();
-    }
-
     s_root = content;
     s_page_start_s = (float)(esp_timer_get_time() / 1000000.0);
     s_view_shift_s = 0;

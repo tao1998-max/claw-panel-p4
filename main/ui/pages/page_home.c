@@ -1,125 +1,312 @@
 #include "page_home.h"
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
 
+#include "ai_ui.h"
+#include "app_registry.h"
+#include "claw_api.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "i18n.h"
-#include "settings.h"
 #include "ui_widgets.h"
 
-/* 主页示例：一个居中的演示开关。
- * 开关状态存 NVS，UI 和 MCP 工具（self.home.set_switch）共用；
- * MCP 从 AI 任务改状态时，UI 用 500 ms 定时器同步。 */
+#define APPS_MAX_ITEMS   16
 
-static lv_obj_t *s_demo_switch;
-static lv_obj_t *s_demo_state;
+/* 卡片栅格：976 页宽 = 16 边距 + 464 卡宽 + 16 列间距 + 464 卡宽 + 16 边距 */
+#define CARD_W        464
+#define CARD_H        96
+#define CARD_ROW_GAP  12
+#define CARD_COL_GAP  16
+#define CARD_SIDE     16
+
+/* 图标色块按索引循环的四色强调色 */
+static const uint32_t s_tile_palette[] = {
+    UI_COLOR_ACCENT,
+    UI_COLOR_VIOLET,
+    UI_COLOR_CYAN,
+    UI_COLOR_OK,
+};
+#define TILE_PALETTE_COUNT (sizeof(s_tile_palette) / sizeof(s_tile_palette[0]))
+
+static const char *TAG = "ui.apps";
+
+typedef struct {
+    char id[APP_REGISTRY_ID_MAX_LEN + 1];
+    char name[64];
+    char entry[256];
+    char args[512];
+} app_item_t;
+
+typedef struct {
+    char name[64];
+    char entry[256];
+    char args[512];
+} launch_ref_t;
+
+static lv_obj_t *s_root;
+static lv_obj_t *s_list;
+static lv_obj_t *s_empty;
+static lv_obj_t *s_status;
 static lv_timer_t *s_timer;
+static volatile bool s_dirty;
+static bool s_listener_registered;
 
-void page_home_apply_demo(bool on)
+static esp_err_t collect_item(const app_registry_entry_t *entry, void *user_ctx)
 {
-    ESP_LOGI("page.home", "apply demo=%d switch=%p", on ? 1 : 0, s_demo_switch);
-    if (s_demo_switch == NULL) return;
-    if (on) {
-        lv_obj_add_state(s_demo_switch, LV_STATE_CHECKED);
-    } else {
-        lv_obj_remove_state(s_demo_switch, LV_STATE_CHECKED);
+    app_item_t *items = user_ctx;
+    if (!entry || !entry->app_id || !entry->app_id[0]) {
+        return ESP_OK;
     }
-    if (s_demo_state != NULL) {
-        lv_label_set_text(s_demo_state, i18n_str(on ? STR_HOME_DEMO_ON : STR_HOME_DEMO_OFF));
-        ui_label_set_text_color(s_demo_state, on ? UI_COLOR_OK : UI_COLOR_MUTED);
+    size_t index = 0;
+    while (index < APPS_MAX_ITEMS && items[index].id[0]) {
+        index++;
     }
+    if (index >= APPS_MAX_ITEMS) {
+        return ESP_OK;
+    }
+    strlcpy(items[index].id, entry->app_id, sizeof(items[index].id));
+    strlcpy(items[index].name,
+            entry->display_name && entry->display_name[0] ? entry->display_name : entry->app_id,
+            sizeof(items[index].name));
+    strlcpy(items[index].entry, entry->entry ? entry->entry : "", sizeof(items[index].entry));
+    strlcpy(items[index].args, entry->args_json ? entry->args_json : "{}",
+            sizeof(items[index].args));
+    return ESP_OK;
 }
 
-static void demo_switch_event(lv_event_t *e)
+static size_t collect_apps(app_item_t *items)
 {
-    bool on = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
-    ESP_LOGI("page.home", "demo switch -> %d", on ? 1 : 0);
-    settings_set_demo(on);
+    memset(items, 0, sizeof(app_item_t) * APPS_MAX_ITEMS);
+    (void)app_registry_foreach(collect_item, items);
+    size_t count = 0;
+    for (size_t i = 0; i < APPS_MAX_ITEMS; i++) {
+        if (items[i].id[0]) {
+            count++;
+        }
+    }
+    return count;
 }
 
-static void demo_timer_cb(lv_timer_t *timer)
+static void apps_changed_cb(void *user_ctx)
 {
-    (void)timer;
-    if (s_demo_switch == NULL || !lv_obj_is_visible(s_demo_switch)) {
+    (void)user_ctx;
+    s_dirty = true;
+}
+
+/* The home page is created before claw_port_init(), so the registry does not
+ * exist yet on the first call. Retry from the 1 s timer instead of marking the
+ * listener as registered on failure. */
+static bool register_listener_if_needed(void)
+{
+    if (s_listener_registered) {
+        return true;
+    }
+    if (app_registry_register_changed_cb(apps_changed_cb, NULL) != ESP_OK) {
+        return false;
+    }
+    s_listener_registered = true;
+    s_dirty = true;
+    ESP_LOGI(TAG, "app registry listener registered");
+    return true;
+}
+
+static void launch_ref_delete_cb(lv_event_t *e)
+{
+    free(lv_event_get_user_data(e));
+}
+
+static void launch_clicked(lv_event_t *e)
+{
+    launch_ref_t *ref = lv_event_get_user_data(e);
+    if (!ref || !ref->entry[0]) {
         return;
     }
-    bool on = settings_get()->demo != 0;
-    bool shown = lv_obj_has_state(s_demo_switch, LV_STATE_CHECKED);
-    if (on != shown) {
-        ESP_LOGI("page.home", "timer sync demo=%d", on ? 1 : 0);
-        page_home_apply_demo(on);
+    char out[512] = {0};
+    esp_err_t err = claw_api_start_task(ref->name, NULL, ref->entry, ref->args,
+                                        0, out, sizeof(out));
+    if (s_status) {
+        if (err == ESP_OK) {
+            lv_label_set_text(s_status, i18n_str(STR_APPS_LAUNCH));
+            lv_obj_set_style_text_color(s_status, lv_color_hex(UI_COLOR_OK), 0);
+        } else {
+            lv_label_set_text_fmt(s_status, "%s: %.120s",
+                                  i18n_str(STR_APPS_FAILED),
+                                  out[0] ? out : esp_err_to_name(err));
+            lv_obj_set_style_text_color(s_status, lv_color_hex(UI_COLOR_ERROR), 0);
+        }
     }
+    ESP_LOGI(TAG, "launch %s path=%s -> %s (%s)", ref->name, ref->entry,
+             esp_err_to_name(err), out);
 }
 
-static lv_obj_t *demo_switch_create(lv_obj_t *parent, int x, int y, bool on)
+static void add_app_card(const app_item_t *item, int index)
 {
-    lv_obj_t *sw = lv_switch_create(parent);
-    lv_obj_set_pos(sw, x, y);
-    lv_obj_set_size(sw, 64, 34);
-    lv_obj_set_style_bg_color(sw, lv_color_hex(UI_COLOR_TILE), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(sw, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_color(sw, lv_color_hex(UI_COLOR_BORDER), LV_PART_MAIN);
-    lv_obj_set_style_border_width(sw, 1, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(sw, lv_color_hex(UI_COLOR_ACCENT),
-                              LV_PART_INDICATOR | LV_STATE_CHECKED);
-    lv_obj_set_style_bg_color(sw, lv_color_hex(UI_COLOR_TEXT), LV_PART_KNOB);
-    if (on) {
-        lv_obj_add_state(sw, LV_STATE_CHECKED);
+    int col = index % 2;
+    int row = index / 2;
+    int x = CARD_SIDE + col * (CARD_W + CARD_COL_GAP);
+    int y = row * (CARD_H + CARD_ROW_GAP);
+
+    lv_obj_t *card = ui_card_create(s_list, x, y, CARD_W, CARD_H);
+    if (!card) {
+        return;
     }
-    lv_obj_add_flag(sw, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(sw, 10);
-    lv_obj_add_event_cb(sw, demo_switch_event, LV_EVENT_VALUE_CHANGED, NULL);
-    return sw;
+    /* 整卡可点：按下时提亮一档 + 强调色描边，视觉反馈比单独按钮强 */
+    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_color(card, lv_color_hex(UI_COLOR_SURFACE_HI), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(card, lv_color_hex(UI_COLOR_ACCENT), LV_STATE_PRESSED);
+
+    /* 左侧图标色块，颜色按索引在强调色板里轮换 */
+    uint32_t tile_color = s_tile_palette[index % TILE_PALETTE_COUNT];
+    (void)ui_badge_create(card, 16, (CARD_H - 56) / 2, 56, LV_SYMBOL_IMAGE, tile_color);
+
+    /* App 名可能由 Agent 生成，用共享 puhui 字体而不是 i18n 子集 */
+    const lv_font_t *name_font = ai_ui_text_font();
+    lv_obj_t *name = ui_label_create(card, item->name, 88, 24,
+                                     UI_COLOR_TEXT,
+                                     name_font != NULL ? name_font : UI_FONT_BODY);
+    if (name) {
+        lv_obj_set_width(name, 248);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    }
+    lv_obj_t *path = ui_label_create(card, item->entry, 88, 52,
+                                     UI_COLOR_MUTED, UI_FONT_SMALL);
+    if (path) {
+        lv_obj_set_width(path, 248);
+        lv_label_set_long_mode(path, LV_LABEL_LONG_DOT);
+    }
+
+    /* 右侧「启动」胶囊是静态提示，点击由整卡统一响应 */
+    lv_obj_t *chip = ui_chip_create(card, i18n_str(STR_APPS_LAUNCH),
+                                    UI_COLOR_ACCENT, NULL);
+    if (chip) {
+        lv_obj_align(chip, LV_ALIGN_RIGHT_MID, -16, 0);
+    }
+
+    launch_ref_t *ref = calloc(1, sizeof(*ref));
+    if (!ref) {
+        return;
+    }
+    strlcpy(ref->name, item->name, sizeof(ref->name));
+    strlcpy(ref->entry, item->entry, sizeof(ref->entry));
+    strlcpy(ref->args, item->args, sizeof(ref->args));
+    lv_obj_add_event_cb(card, launch_clicked, LV_EVENT_CLICKED, ref);
+    lv_obj_add_event_cb(card, launch_ref_delete_cb, LV_EVENT_DELETE, ref);
 }
 
-static void home_create(lv_obj_t *content)
+static void rebuild(void)
 {
-    lv_obj_t *card = ui_card_create(content, 0, 0, 560, 230);
-    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+    if (!s_list) {
+        return;
+    }
+    app_item_t *items = heap_caps_calloc(APPS_MAX_ITEMS, sizeof(*items),
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!items) {
+        return;
+    }
+    size_t count = collect_apps(items);
 
-    lv_obj_t *title = ui_label_create(card, i18n_str(STR_HOME_DEMO_TITLE),
-                                      0, 0, UI_COLOR_TEXT, UI_FONT_TITLE);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 24);
-
-    lv_obj_t *chip = ui_chip_create(card, "MCP", UI_COLOR_CYAN, NULL);
-    lv_obj_align(chip, LV_ALIGN_TOP_RIGHT, -24, 24);
-
-    lv_obj_t *sub = ui_label_create(card, i18n_str(STR_HOME_DEMO_SUB),
-                                    0, 0, UI_COLOR_MUTED, UI_FONT_SMALL);
-    lv_obj_set_width(sub, 500);
-    lv_label_set_long_mode(sub, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 70);
-
-    /* 开关本身水平居中；名称放下面，避免把开关挤到一侧。 */
-    s_demo_switch = demo_switch_create(card, (560 - 64) / 2, 118,
-                                       settings_get()->demo != 0);
-
-    bool demo_on = settings_get()->demo != 0;
-    char demo_text[64];
-    snprintf(demo_text, sizeof(demo_text), "%s · %s", i18n_str(STR_HOME_DEMO_SWITCH),
-             i18n_str(demo_on ? STR_HOME_DEMO_ON : STR_HOME_DEMO_OFF));
-    s_demo_state = ui_label_create(card, demo_text, 0, 0,
-                                   demo_on ? UI_COLOR_OK : UI_COLOR_MUTED, UI_FONT_SMALL);
-    lv_obj_align(s_demo_state, LV_ALIGN_TOP_MID, 0, 168);
-
-    s_timer = lv_timer_create(demo_timer_cb, 500, NULL);
+    lv_obj_clean(s_list);
+    if (count == 0) {
+        if (s_empty) {
+            lv_obj_clear_flag(s_empty, LV_OBJ_FLAG_HIDDEN);
+        }
+        heap_caps_free(items);
+        return;
+    }
+    if (s_empty) {
+        lv_obj_add_flag(s_empty, LV_OBJ_FLAG_HIDDEN);
+    }
+    for (size_t i = 0; i < count && i < APPS_MAX_ITEMS; i++) {
+        add_app_card(&items[i], (int)i);
+    }
+    ESP_LOGI(TAG, "home app list rebuilt: %u item(s)", (unsigned)count);
+    heap_caps_free(items);
 }
 
-static void home_destroy(void)
+static void refresh_timer_cb(lv_timer_t *timer)
 {
-    if (s_timer != NULL) {
+    (void)timer;
+    if (!s_root || !lv_obj_is_visible(s_root)) {
+        return;
+    }
+    if (!register_listener_if_needed()) {
+        return;
+    }
+    if (!s_dirty) {
+        return;
+    }
+    s_dirty = false;
+    rebuild();
+}
+
+static void page_home_create(lv_obj_t *content)
+{
+    s_root = lv_obj_create(content);
+    lv_obj_set_pos(s_root, 0, 0);
+    lv_obj_set_size(s_root, UI_PAGE_W, UI_PAGE_H);
+    lv_obj_set_style_bg_opa(s_root, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_root, 0, 0);
+    lv_obj_set_style_pad_all(s_root, 0, 0);
+    lv_obj_add_flag(s_root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(s_root, LV_DIR_VER);
+
+    s_status = ui_label_create(s_root, "", 0, 0, UI_COLOR_MUTED, UI_FONT_SMALL);
+    if (s_status) {
+        lv_obj_set_width(s_status, UI_PAGE_W);
+        lv_obj_set_pos(s_status, 0, 0);
+    }
+
+    s_list = lv_obj_create(s_root);
+    lv_obj_set_pos(s_list, 0, 30);
+    lv_obj_set_size(s_list, UI_PAGE_W, UI_PAGE_H - 30);
+    lv_obj_set_style_bg_opa(s_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_list, 0, 0);
+    lv_obj_set_style_pad_all(s_list, 0, 0);
+    lv_obj_set_style_pad_row(s_list, 8, 0);
+    lv_obj_add_flag(s_list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(s_list, LV_DIR_VER);
+
+    s_empty = ui_label_create(s_root, i18n_str(STR_APPS_EMPTY), 20, 60,
+                              UI_COLOR_MUTED, UI_FONT_BODY);
+    if (s_empty) {
+        lv_obj_set_width(s_empty, UI_PAGE_W - 40);
+        lv_label_set_long_mode(s_empty, LV_LABEL_LONG_WRAP);
+    }
+
+    s_dirty = true;
+    (void)register_listener_if_needed();
+    rebuild();
+    s_timer = lv_timer_create(refresh_timer_cb, 1000, NULL);
+}
+
+static void page_home_destroy(void)
+{
+    if (s_timer) {
         lv_timer_delete(s_timer);
         s_timer = NULL;
     }
-    s_demo_switch = NULL;
-    s_demo_state = NULL;
+    s_root = NULL;
+    s_list = NULL;
+    s_empty = NULL;
+    s_status = NULL;
+    s_dirty = false;
 }
 
 const ui_page_t page_home = {
     .id = "home",
     .name = STR_NAV_HOME,
-    .symbol = LV_SYMBOL_HOME,
-    .create = home_create,
-    .destroy = home_destroy,
+    .symbol = LV_SYMBOL_DIRECTORY,
+    .create = page_home_create,
+    .destroy = page_home_destroy,
 };
+
+/* The legacy home dashboard owned the demo switch. Apps are now the home
+ * page; keep the symbol so the AI demo event remains harmless. */
+void page_home_apply_demo(bool on)
+{
+    (void)on;
+}

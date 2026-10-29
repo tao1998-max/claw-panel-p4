@@ -57,6 +57,11 @@ public:
 
     void OnIncomingAudio(std::function<void(std::unique_ptr<AudioStreamPacket> packet)> callback);
     void OnIncomingJson(std::function<void(const cJSON* root)> callback);
+    /* Raw text frames (except the tiny server hello) are handed over without
+     * parsing so the caller can move JSON parsing off the small WebSocket
+     * receive task; large MCP arguments would otherwise allocate the whole
+     * cJSON tree on that task. */
+    void OnIncomingJsonRaw(std::function<void(const char* data, size_t len)> callback);
     void OnAudioChannelOpened(std::function<void()> callback);
     void OnAudioChannelClosed(std::function<void()> callback);
     void OnNetworkError(std::function<void(const std::string& message)> callback);
@@ -76,6 +81,7 @@ public:
 
 protected:
     std::function<void(const cJSON* root)> on_incoming_json_;
+    std::function<void(const char* data, size_t len)> on_incoming_json_raw_;
     std::function<void(std::unique_ptr<AudioStreamPacket> packet)> on_incoming_audio_;
     std::function<void()> on_audio_channel_opened_;
     std::function<void()> on_audio_channel_closed_;

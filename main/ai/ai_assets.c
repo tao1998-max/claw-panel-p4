@@ -3,15 +3,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "bsp/esp-bsp.h"
+#include "claw_storage.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_spiffs.h"
 
 static const char *TAG = "ai.assets";
 
-#define FONT_PATH  "/spiffs/font_puhui_common_20_4.bin"
-#define MODEL_PATH "/spiffs/srmodels.bin"
+#define FONT_PATH  AI_ASSETS_DIR "/font_puhui_common_20_4.bin"
+#define MODEL_PATH AI_ASSETS_DIR "/srmodels.bin"
 
 static uint8_t *s_font;
 static size_t s_font_size;
@@ -61,24 +60,29 @@ esp_err_t ai_assets_init(void)
     if (s_inited) {
         return ESP_OK;
     }
-    s_inited = true;
 
-    if (!esp_spiffs_mounted(CONFIG_BSP_SPIFFS_PARTITION_LABEL)) {
-        esp_err_t err = bsp_spiffs_mount();
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "SPIFFS mount failed: %s (AI continues without font/model)",
-                     esp_err_to_name(err));
-            return err;
-        }
+    /* The AI font/model live in the shared 4 MB FAT. Mount it before ui_init;
+     * never format here (the Claw path owns the blank-partition format). */
+    esp_err_t err = claw_storage_mount_fs(false);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "shared FAT mount failed: %s (flash assets with "
+                 "`idf.py claw-flash`)", esp_err_to_name(err));
+        return err;
     }
-    ESP_LOGI(TAG, "SPIFFS mounted at %s", BSP_SPIFFS_MOUNT_POINT);
+    s_inited = true;
+    ESP_LOGI(TAG, "AI assets root: %s", AI_ASSETS_DIR);
 
     s_font = read_file(FONT_PATH, &s_font_size);
     if (s_font != NULL) {
         ESP_LOGI(TAG, "chat font loaded: %u bytes", (unsigned)s_font_size);
+    } else {
+        ESP_LOGW(TAG, "chat font missing; run `idf.py claw-flash`");
     }
 
     s_model_data = read_file(MODEL_PATH, &s_model_size);
+    if (s_model_data == NULL) {
+        ESP_LOGW(TAG, "srmodels missing; run `idf.py claw-flash`");
+    }
     if (s_model_data != NULL) {
         s_models = srmodel_load(s_model_data);
         if (s_models != NULL) {
