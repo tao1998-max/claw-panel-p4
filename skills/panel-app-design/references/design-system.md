@@ -9,7 +9,7 @@ Write these down before drawing:
 - real copy, including Chinese punctuation;
 - required states: idle/running/paused/done, selected/pressed/disabled,
   empty/error;
-- hardware constraints: no screenshot, one full-screen bitmap, 1.4 MiB FAT.
+- hardware constraints: no screenshot, one full-screen bitmap, ~1.7 MiB FAT.
 
 Then write a compact plan: 4-6 color tokens, font roles, an ASCII wireframe with
 coordinates, one memorable element, and a sentence explaining why the result is
@@ -96,3 +96,40 @@ There is no screenshot or pixel-probe API. Use:
 2. static checks for overlaps and font coverage;
 3. a short serial log of which layers used SD vs fallback;
 4. the user's visual confirmation on the real panel.
+
+## App icons
+
+The home grid draws App icons at 96x96 in a six-column phone-style layout. An
+icon is not a poster: at that size gradients, shadows and text turn to mud.
+
+- one flat glyph on one gradient background, drawn edge-to-edge;
+- no text, no thin outlines, no transparency (baseline JPEG has none);
+- 96x96, baseline 4:2:0, roughly 1.5-3 KB;
+- keep a single accent hue per App so the grid reads as a set;
+- `scripts/make_app_icons.py` has primitives (rounded rect, circle, ring,
+  line, polygon) that render this style with ffmpeg.
+
+## Drawing data-dense screens
+
+Charts, sparklines, heat maps and gradient bands are images, not hundreds of
+labels. Build them with `image.new()` + `fill_rect`/`line`/`blit` in C and show
+the result through `img:set_frame(canvas)`; doing the same with per-pixel Lua
+strings costs 10-100x more CPU and PSRAM. Create the canvas once and reuse it:
+a 920x320 intraday chart redraws in about 50 ms on the P4, and the old
+per-row `string.sub`/`string.concat` builder was the hot spot. Redraw only the
+changed region when the data updates.
+
+## Full-screen artwork
+
+A 1024x600 JPEG decoded once and shown with `img:set_frame()` is the default
+background path. If a dark gradient shows visible chroma blocks/banding (the
+device decoder's 4:2:0 upsampling can do this), an optional dithered raw path
+is available:
+
+- generate with `scripts/make_raw_background.py` (ffmpeg decode + 8x8 Bayer),
+  load with `image.load_raw(path, 1024, 600)` and show with `img:set_frame()`;
+- it removes runtime decode and the Lua string copy, but is 1.23 MiB per frame
+  (SD only, one buffer alive);
+- keep the 1024x600 JPEG (q45-55 in the package, q85-92 on SD) as fallback;
+- on the reference weather App the raw difference was not visible, so it stays
+  on JPEG.

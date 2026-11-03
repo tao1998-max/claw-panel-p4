@@ -100,6 +100,9 @@ NVS → settings → ai_early_init(FAT/字体/模型) → 显示+UI → 外设 �
 - 种子版本 28 增加 `net`/`mqtt`/`websocket` 三份 Lua 模块文档到
   `builtin_lua_modules`（TCP/UDP/DNS/HTTP、MQTT、WebSocket），升级后首次启动会
   重写这些文档。
+- 种子版本 36 刷新 `builtin_lua_modules` 文档：LVGL Lottie/animimg/GIF、
+  `D:`/`S:` 文件系统、RS485 使用官方 `uart`，并补充 GPIO 等硬件驱动需要
+  先注册资源的说明；升级后首次启动会重写这些文档。
 - `idf.py app-flash` 不动 FAT；`idf.py flash` 也不含资源镜像；只有
   `idf.py claw-flash` 会重写整个 4 MB 分区。
 
@@ -119,14 +122,21 @@ SD 卡挂载在 `/sdcard`，由 BSP 在开机时挂载一次：
 - SD 根上的应用**原地启动**（入口脚本直接从卡上加载，不复制到 FAT）；
   `publish_app`/`remove_app` 仍只操作 FAT 根，SD 应用的增删走 Web 文件管理；
 - 应用整包放 SD 时，包结构与 FAT 相同（`launcher.json` + `scripts/` + 素材）；
+  清单支持可选 `version`（≤31 字符）与 `icon`（96×96 baseline JPEG），首页图标网格显示二者；
 - 改完 SD 应用需要重启才会重新扫描（与 FAT 相同）。
 
 面板 App 的素材可以放 `/sdcard/panel-assets/<app_id>/`。应用应优先读 SD，
 失败/无卡时退回包内同尺寸 fallback：
 
 - `image.load_file("/sdcard/...jpg")`：baseline JPEG，≤4 MiB、≤1920×1080；
+  可传 `{max_width=..., max_height=...}` 直接按 1/2~1/8 解码成缩略图；
+- `image.load_raw(path, w, h[, image.RGB565])`：读紧凑 RGB565/GRAY8 原始像素；
+  可选：暗部色块明显时，用 `tools/make_raw_background.py` 离线抖动成 RGB565
+  再交给 `set_frame`；默认仍用 JPEG + `set_frame`（参考天气 App 实测无明显差异）；
 - `storage.*` / `io`：可读写 `/sdcard` 绝对路径；
 - `audio.play("/sdcard/...ogg")`：允许；
+- `audio.player` 支持本地 MP3 和 HTTP(S) MP3 流：按原生采样率/声道独占 ES8311
+  播放，期间小智语音暂停，结束/停止/App 退出后恢复 16 kHz 并重启小智；
 - EAF：用 `src_data` 读 SD 字节，不能把 `/sdcard` 传给 `src=`；
 - `lvgl.font_load`：支持绝对 `/sdcard/...` 路径（claw_port_init 把 SD 挂载点注册为
   额外字体根），SD 应用可整包带 TTF 运行；同时也仍接受 `D:apps/<id>/...`（FAT 根）；
@@ -148,9 +158,20 @@ Web 端点（无鉴权，仅可信 LAN）：
 | POST | `/api/sd-files/upload?path=/<rel>` | raw body，父目录必须存在 |
 | DELETE | `/api/sd-files?path=/<rel>&recursive=1` | 删除文件/目录；禁止删根 |
 | GET | `/sd-files/<rel>` | 浏览器直链下载（与 `/files/*` 同风格） |
+| GET | `/api/lua-failures?limit=4` | 最近失败的 Lua 任务（id/name/path/status/error），App 调试用 |
+| GET | `/api/apps` | 已注册应用（FAT/SD，id/name/path/volume） |
+| POST | `/api/apps/refresh` | 重新扫描应用根（上传后免重启） |
+| POST | `/api/apps/<id>/launch` | 启动应用，返回 `job_id` |
+| POST | `/api/apps/<id>/test?duration_ms=3000` | 启动→运行 N ms→停止，返回 `running/finished/failed` 与 `path:line: reason` |
+| GET | `/api/lua-tasks` | 运行中的 Lua 任务 |
+| POST | `/api/lua-tasks/<id>/stop` | 停止任务 |
 
 路径相对 `/sdcard/panel-assets`（`/api/sd-assets*`）或 `/sdcard`（`/api/sd-files*`），
 拒绝 `..`、反斜杠、控制字符和根删除。未插卡返回 503，空间不足返回 507。
+`/api/apps*` 与 `/api/lua-tasks*` 让外部 AI 闭环自检：上传后 `refresh`、`test` 启动
+并自动停止，再读 `/api/lua-failures` 的错误；这些接口能运行任意已注册 App
+（Lua 可读写/联网），无鉴权，只能用于可信 LAN。
+
 外部 AI 的 `skills/panel-app-design` 用 `/api/sd-assets` 验证/上传素材；旧固件没有
 端点时改为手动拷卡。
 
@@ -167,6 +188,16 @@ Lua 运行时为**官方 `cap_lua`，源码保持一致**：
   `cap_lua_add_package_path_dir()` 加入 `package.path`；
 - 时间/停止：cap_lua 每 100 条指令检查一次；后台任务默认 60 s、最长 300 s；
 - 脚本上限 64 KB，输出环 4 KB；
+- Lua 图像：`image.new()` 画布支持 `fill/fill_rect/line/blit`（C 循环，
+  2000 次 4×4 半透明矩形约 40 ms）；`lvgl` 的 `img:set_frame(frame)` 零拷贝接管
+  RGB565 缓冲（约 0.16 ms/次），避免 `frame:data()` + `set_raw_rgb565` 的两次大拷贝；
+- JPEG 选项：`image.encode` / `save_file` 支持 `quality`(1–100) 与
+  `subsample`(444/422/420/gray)；`load_file` 的 `max_width/max_height` 走解码期
+  1/2–1/8 缩放；`crop/rotate/flip` 优先走 PPA（JPEG 旋转可走解码器），
+  `resize` 对未解码 JPEG 先做解码缩放，RGB565 再走 PPA；`image.load_raw`
+  可把离线抖动好的 RGB565 背景直接零拷贝交给 LVGL；
+- 任务失败原因写串口 `cap_lua_async` 日志，并保留最近 4 条供
+  `GET /api/lua-failures` 查询（App 退出后用它定位 `path:line: reason`）；
 - Claw 后台/Lua 任务优先使用 PSRAM 栈；本工程启用 XIP 后 FAT/NVS 写入不再
   关闭 cache，PSRAM 栈可安全使用。`claw_core` 和 `cap_scheduler` 仍固定内部
   RAM 栈；Lua 任务与 LVGL 同为优先级 4（网络/UI 都是短切片，互不抢占）。
@@ -207,7 +238,25 @@ claw.panel.status() / show_message(text) / demo(on)
 - **Lua http_server 路由已启用**：`/lua/<app_id>/*` 静态、`/api/lua/<app_id>/*` 接口，由 App 的 `serve_forever()` 或非阻塞 `poll()` 分发（`CONFIG_APP_CLAW_LUA_MODULE_HTTP_SERVER`）。
 - `insecure=true` 依赖 `CONFIG_ESP_TLS_INSECURE` + `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`（`sdkconfig.defaults` 已开启）。
 - DNS 只返回单个地址（lwip 公共 API 限制）；IPv6 实际仅字面量可用（无 SLAAC）。
-- 网络模块文档作为 `builtin_lua_modules` 技能种子写入（`CLAW_SEED_VERSION 28`），外部 AI 的 `skills/panel-app-design/references/networking.md` 有同样的契约说明。
+- 网络模块文档作为 `builtin_lua_modules` 技能种子写入（`CLAW_SEED_VERSION 36`），外部 AI 的 `skills/panel-app-design/references/networking.md` 有同样的契约说明。
+
+### RS485 串口（UART1）
+
+板载 RS485 接 UART1：**TX=GPIO26、RX=GPIO27，115200 8N1**，方向 EN 由收发器硬件自动处理。按官方 ESP-Claw 硬件模型，固件只在启动时做一次引脚/状态自检，并把 `uart_bus:1`、`gpio:26`、`gpio:27` 注册进硬件资源表；随后释放端口，由 Lua 的官方 `uart` 模块按需独占：
+
+```lua
+local uart = require("uart")
+local u = uart.new(1, 26, 27, 115200)
+
+u:flush_input()
+u:write({0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x84, 0x0A})
+local reply = u:read(64, 500)   -- 超时 500 ms
+u:close()
+```
+
+- 端口单所有者：脚本 `close()` 或任务退出后其它脚本才能重新打开
+- `read` / `read_line` 超时单位 ms，0 为非阻塞；接收缓冲 1 KiB
+- 固件不再常驻 RS485 任务，也不做回环测试；请求/应答协议由脚本自行 `flush_input()` 和等待
 
 ## 小智 MCP 工具
 
@@ -248,19 +297,59 @@ claw.panel.status() / show_message(text) / demo(on)
   `event_key=<id>`，action `run_script`），再 `scheduler_add`；失败删除规则回滚；
   早期兼容规则 `claw_script_default` 已移除（启动时清理）；
 - `payload_json` 只有 512 B，定时项保存脚本路径 + 参数，不内嵌脚本；
-- cron 依赖系统时间：启动时优先用板载 RX8025T 播种；SNTP 校时后回写 RTC；两者都不可用时只跑 interval/once；
+- cron 依赖系统时间：启动时优先用板载 RX8025T 播种；RTC 统一存 UTC，SNTP 校时后回写 UTC；旧固件的本地时间 RTC 会通过 NVS 标记一次性迁移。两者都不可用时只跑 interval/once；
 - 创建定时入口仍受“允许小智运行 Lua”开关约束（`self.claw.add_schedule` /
   本地 Agent 的 `cap_lua`）；已存在计划由 router 按规则执行；
 - 任务记录：16 条环形表（origin / 状态 / 起止时间 / 进度），页面每秒取一次 JSON 快照。
 - 端到端验证：本地 Agent 的 `scheduled_task` skill 创建
   `interval=10s + max_runs=1` 的 `demo10`，10 秒后 router 匹配 `demo10_run`、
   执行 `system/scripts/demo_on.lua`，`claw.panel: demo switch -> 1`。
-- 面板 Claw 页按 ESP-Claw Web 管理端的顶层导航重做：系统状态（含 FAT 用量） / 系统设置
-  （LLM、IM）/ 记忆管理 / 在线聊天 / 定时任务 / 能力管理 /
-  Lua 模块管理 / 文件管理；左侧导航和内容区都可滚动。
-  任务、定时、脚本、技能运行、测试定时等开发向按钮已移除：定时和脚本由
-  Agent / Web 管理端管理，面板只做状态查看和必要开关。文件页是可读写工作区
-  的只读浏览（点文件查看内容），不提供新建/删除/运行入口。
+- 面板 Claw 页收敛为四个页签：在线聊天（默认）/ 定时任务 / 工作区（记忆+文件）/
+  设置，采用左侧固定轨道 + 右侧详情面板；轨道底部显示 Agent、Lua 权限和运行中
+  任务数。定时任务通过对话/语音或 Web 管理端创建，面板只做触发、启停、删除；
+  工作区为只读浏览（记忆文件、FAT/SD 文件，点开预览）。
+- 聊天页的会话选择弹窗支持新建、切换、删除：每行右侧垃圾桶按钮 + 二次确认，
+  删除走官方 `claw_agent_mgr_delete_session`，同时清理该会话的历史与技能状态；
+  运行中的会话拒绝删除，删除当前会话时会自动切到其它会话或新建一个。
+
+## 豆包语音 TTS（可选）
+
+本地 Agent 的最终回复可以用豆包 TTS 播报，也可以由 Lua 主动调用。
+
+- Lua：`claw.speak(text[, timeout_ms])`，用一个流式 TTS 会话播完，阻塞到播放结束；
+  默认 120 s、最长 600 s。它是显式调用，不受“自动播报”开关影响；emoji/符号会
+  在合成前清洗，返回 `true` 或 `nil, err`。
+- 本地 Agent 的 OpenAI 兼容后端（DeepSeek 等）使用 SSE 流式请求，并复用同一条
+  HTTPS 连接（keep-alive），避免每次提问重新做 TLS 握手；增量文本会实时显示在设备
+  聊天页的临时气泡里，并按句提前送 TTS，最终回答仍完整写入会话历史。
+- 自动播报：`auto_speak=true` 时，本地 Agent 的最终回复会自动合成并播放；关闭后
+  流式自动播报入口直接拒绝，`claw.speak()` / `/api/tts/speak` 仍可显式播报。小智
+  通过 `self.claw.ask` 拿到的回复不会重复播报。
+- 自动播报复用一条持久 WebSocket，按回复顺序运行多个 TTS session，不再每句重新
+  建连接；首次连接后后续问题不会重复做 TLS 握手。
+- TTS PCM 先写入 **128 KB PSRAM 流缓冲**（约 4 s）；缓冲满时阻塞 WebSocket 接收，
+  形成背压。不要改回 2 MB：整段回复会在播放开始时集中写入 PSRAM，实测会造成一帧
+  整屏白闪；128 KB 仍能吸收网络抖动，长回复通过背压保持完整。
+- HTTP：
+  - `GET /api/tts/status`：是否已配置、鉴权方式、音色、资源 ID、自动播报开关；
+  - `POST /api/tts/config`：部分更新 NVS，字段 `api_key` 或
+    `app_id`+`access_token`、`resource_id`、`speaker`、`auto_speak`；
+  - `POST /api/tts/speak`：`{"text":"...","timeout_ms":30000}`，同步合成并播放；
+    `timeout_ms` 最大 180 s。
+- 协议：`wss://openspeech.bytedance.com/api/v3/tts/bidirection` 二进制帧，输出
+  16 kHz 单声道 PCM 交给 ES8311；默认 `X-Api-Key`，也支持 AppID/Access Token。
+- 资源 ID 必须与音色所属商品一致（1.0 常用 `volc.service_type.10029`，2.0 用
+  `seed-tts-2.0`），否则服务端返回 `55000000`。
+- 凭据存 NVS `doubao`；状态接口不回显密钥；配置/播报接口无鉴权，只限可信 LAN。
+- 面板 **Claw → 设置 → 豆包语音**：API Key、App ID、Access Token、资源 ID 点开输入；
+  「音色」点开选择弹窗，按 **1.0 / 2.0（通用）/ 角色 / 客服 / 多语种 / ICL** 分类，
+  内置 5 个常用 1.0 音色和全部 285 个 2.0 官方音色；选「自定义」可手填任意
+  `voice_type`。选择后会自动把资源 ID 切到对应代际（1.0 → `volc.service_type.10029`，
+  2.0 → `seed-tts-2.0`），避免商品/音色不匹配的 `55000000`。
+  自动播报开关与其它设置行使用同一行背景；密钥字段只显示“已设置/未设置”。
+- 音色目录随固件静态编译（来源：火山官方音色列表），打开时不联网；普通 API Key
+  没有音色列表接口（`ListSpeakers` 需要 AK/SK），新增音色需更新固件或走「自定义」。
+  个别 ICL 角色/音色需要账号开通对应商品，未开通时服务端会返回权限或资源错误。
 - 应用启动失败会留在任务输出里；`lvgl.font_load()` 在本固件会因
   `LV_USE_TINY_TTF=n` 报错，Agent 指南要求用 `pcall` 包住并回落到内置字体。
 - **flash 写与显示**：脚本/定时写到内部 FAT 时，SPI1 默认会关闭 cache，P4 DPI
@@ -321,8 +410,10 @@ claw.panel.status() / show_message(text) / demo(on)
 OTA 槽 5.9375 MB，余量约 1.3 MB。FATFS 长文件名/中文码页约占 200 KB。
 
 内部 RAM：LVGL draw/rotate 缓冲（约 100 KB x2）与 LVGL 对象均放 PSRAM
-（`CONFIG_LV_USE_CUSTOM_MALLOC` + `main/ui/lvgl_mem_psram.c`）；启动 30 s 后
-内部堆实测 free 142 KB / largest 53 KB / min 100 KB，优化前约 52/31/43 KB。
+（`CONFIG_LV_USE_CUSTOM_MALLOC` + `main/ui/lvgl_mem_psram.c`）。启动 30 s 后
+内部堆随 AI 语音处理是否静音、网络/IM 初始化状态而波动，实测约
+free 100–200 KB / largest 31–118 KB / min 60–155 KB；以启动日志的
+`claw_port: heap@30s` 为准。
 
 ## 排查
 
@@ -330,7 +421,8 @@ OTA 槽 5.9375 MB，余量约 1.3 MB。FATFS 长文件名/中文码页约占 200
 | --- | --- |
 | Claw 页面显示不可用 | `CONFIG_TEMPLATE_ENABLE_CLAW=y`；日志是否有 `ESP-Claw port ready` |
 | FAT 挂载失败 | 分区表是否含 `claw`；日志 `claw_storage`；`ESP_ERR_NO_MEM` 查 `VFS_MAX_COUNT` |
-| 屏幕闪烁/卡顿 | Lua 任务优先级必须低于 LVGL；避免长时间忙等脚本；确认 `CONFIG_SPIRAM_XIP_FROM_PSRAM=y`，否则 Agent 记忆写 FAT 时可能整屏闪 |
+| 屏幕闪烁/卡顿 | 确认 `CONFIG_BSP_LCD_DPI_BUFFER_NUMS=2` + `CONFIG_BSP_DISPLAY_LVGL_AVOID_TEAR=y`；Lua 任务优先级必须低于 LVGL；避免长时间忙等脚本；确认 `CONFIG_SPIRAM_XIP_FROM_PSRAM=y`，否则 Agent 记忆写 FAT 时可能整屏闪 |
+| C6 版本不匹配 / RPC 超时 | C6 从机应为 `esp_hosted 2.11.7`（与 host 匹配）；维护用 `POST /api/c6-ota`，固件从 `/sdcard/c6/network_adapter.bin` 读取，详见 README |
 | `AI Lua 已关闭` | Claw → 设置打开开关（或 `lua_ai=1`） |
 | 脚本无输出 | `print` 输出在任务详情；同步脚本输出上限 4 KB |
 | 任务启动失败 | 并发上限 4、AI ≤2；`list_tasks` 查运行中任务后先停止 |
@@ -350,7 +442,9 @@ OTA 槽 5.9375 MB，余量约 1.3 MB。FATFS 长文件名/中文码页约占 200
 - 摄像头 / 视觉、蓝牙、触摸（原始坐标）、IMU、IR、磁力计未移植；触摸走 BSP
   的 GT911 + LVGL 指针，IR/触摸的纯 Lua 库已 seed 到 `system/`。
 - QQ / 微信 / 飞书 / Telegram 的 IM 传输已移植；凭据在 Web 管理端保存，
-  微信扫码登录也已绑定到 `cap_im_wechat_qr_login_*`。
+  微信扫码登录也已绑定到 `cap_im_wechat_qr_login_*`。IM gateway 在 Wi-Fi 或以太网
+  真正拿到 IP 后才启动（`app_start` 的 `im_start_task` 等待），避免开机阶段的
+  DNS/token 失败和重试。
 - Lua 通用驱动（GPIO/I2C/ADC/PWM/RMT/UART 等）和 display/LVGL/image 模块
   已注册；本板没有的 button/knob/led_strip/sci/environmental_sensor 默认不注册，
   需要外接硬件时打开 `CONFIG_TEMPLATE_CLAW_LUA_UNUSED_HW_MODULES`。
@@ -367,7 +461,7 @@ OTA 槽 5.9375 MB，余量约 1.3 MB。FATFS 长文件名/中文码页约占 200
 
 - 启动：`web_ui_start()` 在 `ai_start()` 之后初始化并启动 `http_server`，端口 80；
 - 资源：官方预编译 `index.html.gz` + `favicon.ico` 嵌入固件；
-- API：`/api/status`、`/api/storage`、`/api/config`、`/api/capabilities`、`/api/lua-modules`、`/api/files*`、`/api/sd-assets*`、`/api/sd-files*`、`/sd-files/*`、`/api/schedules*`、`/api/webim/*`、`/api/wechat/login/*`、`/api/restart`，以及 `/ws/webim`；
+- API：`/api/status`、`/api/storage`、`/api/config`、`/api/capabilities`、`/api/lua-modules`、`/api/files*`、`/api/sd-assets*`、`/api/sd-files*`、`/sd-files/*`、`/api/schedules*`、`/api/tts/*`、`/api/webim/*`、`/api/wechat/login/*`、`/api/restart`，以及 `/ws/webim`；
 - 配置映射：Wi-Fi 走 `esp_wifi_set_config` + reconnect；LLM 的地址/模型/Key 以及
   timeout、max_tokens、max_tokens_field、reasoning_effort、supports_tools/vision、
   image 限制等高级字段全部持久化到 NVS `claw` 并应用到 Agent core；搜索
@@ -379,6 +473,6 @@ OTA 槽 5.9375 MB，余量约 1.3 MB。FATFS 长文件名/中文码页约占 200
 - Web 记忆页的 `/memory` 通过文件 API 别名映射到本工程的 `data/agent/memory`；官方 `MEMORY.md` 在列表中同时以 `memory.md` 出现，读取时映射回 `MEMORY.md`，因此四个记忆卡片都能加载；
 - 未映射：AP 热点字段（STA-only，`/api/status` 的 AP 字段固定为空）、
   `enabled_lua_modules` 动态启停（`/api/lua-modules` 只读）；
-- SD：`/api/sd-assets` 只暴露 `/sdcard/panel-assets`；`/api/sd-files` 管理整张卡（Web 文件页“内部存储/SD 卡”切换），两者都是写接口；App 包上传后需重启才能刷新 launcher，SD 素材变更只需重开 App；
+- SD：`/api/sd-assets` 只暴露 `/sdcard/panel-assets`；`/api/sd-files` 管理整张卡（Web 文件页“内部存储/SD 卡”切换），两者都是写接口；App 包上传后调用 `POST /api/apps/refresh` 即可刷新 launcher（`upload_app.py` 自动调用；旧固件用重启），SD 素材变更只需重开 App；
 - 安全：没有 HTTP 鉴权，只允许可信 LAN 访问；
 - 注意：`CONFIG_LWIP_MAX_SOCKETS=16`，HTTP 服务最多 10 个客户端连接，给 XiaoZhi WSS 留余量。

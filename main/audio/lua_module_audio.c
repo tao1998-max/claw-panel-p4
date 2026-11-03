@@ -1,9 +1,11 @@
 /*
- * Product Lua module: audio output and short OGG effects.
+ * Product Lua module: audio output, short OGG effects and native-rate MP3.
  *
  * The module sits on top of XiaoZhi's AudioService (ES8311 + I2S), so it never
- * opens the codec itself. PCM is fed through the existing playback queue;
- * OGG effects use the same decoder as the assistant prompts.
+ * opens a second codec. PCM is fed through the existing playback queue;
+ * OGG effects use the same decoder as the assistant prompts. MP3 takes the
+ * codec over exclusively (service paused, native rate) because the shared
+ * service is fixed at 16 kHz mono.
  *
  * App-friendly form: audio.play("deal") resolves
  * <app-root>/assets/sfx/deal.ogg, where <app-root> is derived from the
@@ -17,6 +19,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -29,6 +32,7 @@
 #include "freertos/task.h"
 #include "lauxlib.h"
 #include "lua.h"
+#include "lua_audio_mp3.h"
 
 #define AUDIO_PATH_MAX 256
 #define AUDIO_OUTPUT_MT "audio.output"
@@ -67,6 +71,7 @@ typedef struct {
     int output_ref;
     bool playing;
     bool stopped;
+    bool mp3;
 } audio_player_ud_t;
 
 static bool s_output_open;
@@ -94,10 +99,11 @@ static bool audio_path_is_allowed(const char *path)
     return false;
 }
 
-static bool has_ogg_suffix(const char *name)
+static bool has_suffix_ci(const char *name, const char *suffix)
 {
     size_t len = strlen(name);
-    return len >= 4 && strcmp(name + len - 4, ".ogg") == 0;
+    size_t suffix_len = strlen(suffix);
+    return len >= suffix_len && strcasecmp(name + len - suffix_len, suffix) == 0;
 }
 
 static bool copy_app_root(const char *script_path, char *root, size_t root_size)
@@ -125,10 +131,10 @@ static bool copy_app_root(const char *script_path, char *root, size_t root_size)
     return true;
 }
 
-static bool join_audio_path(const char *root, const char *name, const char *subdir,
-                            char *out, size_t out_size)
+static bool join_media_path(const char *root, const char *name, const char *subdir,
+                            const char *suffix, char *out, size_t out_size)
 {
-    const char *ext = has_ogg_suffix(name) ? "" : ".ogg";
+    const char *ext = has_suffix_ci(name, suffix) ? "" : suffix;
     int written = snprintf(out, out_size, "%s/%s%s%s", root,
                            subdir != NULL ? subdir : "", name, ext);
     return written > 0 && (size_t)written < out_size;
@@ -140,7 +146,7 @@ static bool file_exists(const char *path)
     return stat(path, &st) == 0 && !S_ISDIR(st.st_mode);
 }
 
-static bool resolve_audio_path(lua_State *L, const char *name,
+static bool resolve_media_path(lua_State *L, const char *name, const char *suffix,
                                char *out, size_t out_size)
 {
     if (name == NULL || name[0] == '\0' || strstr(name, "..") != NULL) {
@@ -169,12 +175,12 @@ static bool resolve_audio_path(lua_State *L, const char *name,
     bool bare = strchr(name, '/') == NULL;
     if (bare) {
         /* audio.play("deal") -> <app>/assets/sfx/deal.ogg */
-        if (!join_audio_path(root, name, "assets/sfx/", first, sizeof(first))) {
+        if (!join_media_path(root, name, "assets/sfx/", suffix, first, sizeof(first))) {
             return false;
         }
     } else {
         /* audio.play("assets/sfx/deal.ogg") -> <app>/assets/sfx/deal.ogg */
-        if (!join_audio_path(root, name, "", first, sizeof(first))) {
+        if (!join_media_path(root, name, "", suffix, first, sizeof(first))) {
             return false;
         }
     }
@@ -187,7 +193,7 @@ static bool resolve_audio_path(lua_State *L, const char *name,
     /* Convenience: audio.play("sfx/deal") also finds <app>/assets/sfx/deal.ogg. */
     if (!bare) {
         char alt[AUDIO_PATH_MAX];
-        if (join_audio_path(root, name, "assets/", alt, sizeof(alt)) &&
+        if (join_media_path(root, name, "assets/", suffix, alt, sizeof(alt)) &&
             file_exists(alt)) {
             strlcpy(out, alt, out_size);
             return audio_path_is_allowed(out);
@@ -197,6 +203,21 @@ static bool resolve_audio_path(lua_State *L, const char *name,
     /* Let the player report the missing file; keep the resolved path. */
     strlcpy(out, first, out_size);
     return audio_path_is_allowed(out);
+}
+
+static bool resolve_audio_path(lua_State *L, const char *name,
+                               char *out, size_t out_size)
+{
+    return resolve_media_path(L, name, ".ogg", out, out_size);
+}
+
+/* Detect the container from the suffix so .mp3 goes to the MP3 task and
+ * everything else keeps the existing OGG/Opus service path. */
+static bool resolve_play_path(lua_State *L, const char *name,
+                              char *out, size_t out_size, bool *is_mp3)
+{
+    *is_mp3 = has_suffix_ci(name, ".mp3");
+    return resolve_media_path(L, name, *is_mp3 ? ".mp3" : ".ogg", out, out_size);
 }
 
 static audio_output_ud_t *check_output(lua_State *L, int index)
@@ -1038,6 +1059,10 @@ static int lua_audio_player_close(lua_State *L)
 {
     audio_player_ud_t *ud = (audio_player_ud_t *)luaL_checkudata(L, 1, AUDIO_PLAYER_MT);
     if (ud->open) {
+        if (ud->mp3) {
+            lua_audio_mp3_stop();
+            ud->mp3 = false;
+        }
         ud->open = false;
         ud->playing = false;
         if (ud->output_ref != LUA_NOREF) {
@@ -1052,6 +1077,10 @@ static int lua_audio_player_close(lua_State *L)
 static int lua_audio_player_gc(lua_State *L)
 {
     audio_player_ud_t *ud = (audio_player_ud_t *)luaL_checkudata(L, 1, AUDIO_PLAYER_MT);
+    if (ud->mp3) {
+        lua_audio_mp3_stop();
+        ud->mp3 = false;
+    }
     if (ud->output_ref != LUA_NOREF) {
         luaL_unref(L, LUA_REGISTRYINDEX, ud->output_ref);
         ud->output_ref = LUA_NOREF;
@@ -1072,13 +1101,43 @@ static int lua_audio_player_play(lua_State *L)
         lua_pop(L, 1);
     }
 
+    if (lua_audio_mp3_is_url(name)) {
+        lua_audio_mp3_stop();
+        if (!lua_audio_mp3_play(name, wait ? 60000 : 0, cap_lua_runtime_job_id(L))) {
+            lua_pushnil(L);
+            lua_pushstring(L, lua_audio_mp3_error());
+            return 2;
+        }
+        ud->playing = true;
+        ud->stopped = false;
+        ud->mp3 = true;
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+
     char path[AUDIO_PATH_MAX];
-    if (!resolve_audio_path(L, name, path, sizeof(path))) {
+    bool is_mp3 = false;
+    if (!resolve_play_path(L, name, path, sizeof(path), &is_mp3)) {
         lua_pushnil(L);
         lua_pushstring(L, "player path must be app-relative or an allowed absolute path");
         return 2;
     }
 
+    if (is_mp3) {
+        lua_audio_mp3_stop();
+        if (!lua_audio_mp3_play(path, wait ? 60000 : 0, cap_lua_runtime_job_id(L))) {
+            lua_pushnil(L);
+            lua_pushstring(L, lua_audio_mp3_error());
+            return 2;
+        }
+        ud->playing = true;
+        ud->stopped = false;
+        ud->mp3 = true;
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+
+    ud->mp3 = false;
     if (ud->playing && !ai_audio_playback_idle()) {
         ai_audio_stop_playback();
     }
@@ -1104,7 +1163,10 @@ static int lua_audio_player_play(lua_State *L)
 static int lua_audio_player_stop(lua_State *L)
 {
     audio_player_ud_t *ud = check_player(L, 1);
-    if (ud->playing) {
+    if (ud->mp3) {
+        lua_audio_mp3_stop();
+        ud->mp3 = false;
+    } else if (ud->playing) {
         ai_audio_stop_playback();
     }
     ud->playing = false;
@@ -1116,29 +1178,85 @@ static int lua_audio_player_stop(lua_State *L)
 static int lua_audio_player_poll(lua_State *L)
 {
     audio_player_ud_t *ud = check_player(L, 1);
-    bool idle = ai_audio_playback_idle();
     const char *state = "idle";
-    if (ud->stopped) {
-        state = "stopped";
-    } else if (ud->playing) {
-        state = idle ? "finished" : "playing";
+    bool running = false;
+    bool is_mp3 = ud->mp3;
+
+    if (is_mp3) {
+        switch (lua_audio_mp3_state()) {
+        case LUA_AUDIO_MP3_BUFFERING:
+            state = "buffering";
+            running = true;
+            break;
+        case LUA_AUDIO_MP3_PLAYING:
+            state = "playing";
+            running = true;
+            break;
+        case LUA_AUDIO_MP3_FINISHED:
+            state = "finished";
+            ud->playing = false;
+            break;
+        case LUA_AUDIO_MP3_STOPPED:
+            state = "stopped";
+            ud->playing = false;
+            break;
+        case LUA_AUDIO_MP3_ERROR:
+            state = "error";
+            ud->playing = false;
+            break;
+        default:
+            state = "idle";
+            ud->playing = false;
+            break;
+        }
+    } else {
+        bool idle = ai_audio_playback_idle();
+        if (ud->stopped) {
+            state = "stopped";
+        } else if (ud->playing) {
+            state = idle ? "finished" : "playing";
+            running = !idle;
+        }
     }
 
     lua_newtable(L);
     lua_pushstring(L, state);
     lua_setfield(L, -2, "state");
-    lua_pushboolean(L, ud->playing && !idle);
+    lua_pushboolean(L, running);
     lua_setfield(L, -2, "running");
+    uint32_t output_rate = 16000;
+    uint8_t output_channels = 1;
+    if (is_mp3) {
+        output_rate = lua_audio_mp3_source_rate();
+        if (output_rate == 0) {
+            output_rate = 16000;
+        }
+        output_channels = 2; /* exclusive MP3 output is always stereo */
+    }
     lua_newtable(L);
-    lua_pushinteger(L, 16000);
+    lua_pushinteger(L, (lua_Integer)output_rate);
     lua_setfield(L, -2, "sample_rate");
-    lua_pushinteger(L, 1);
+    lua_pushinteger(L, output_channels);
     lua_setfield(L, -2, "channels");
     lua_pushinteger(L, 16);
     lua_setfield(L, -2, "bits");
     lua_pushinteger(L, 0);
     lua_setfield(L, -2, "bitrate");
+    if (is_mp3) {
+        lua_pushinteger(L, (lua_Integer)lua_audio_mp3_source_rate());
+        lua_setfield(L, -2, "source_sample_rate");
+        lua_pushinteger(L, (lua_Integer)lua_audio_mp3_source_channels());
+        lua_setfield(L, -2, "source_channels");
+    }
     lua_setfield(L, -2, "music_info");
+    if (is_mp3) {
+        lua_pushnumber(L, lua_audio_mp3_level());
+        lua_setfield(L, -2, "level");
+    }
+    if (is_mp3 && !running && lua_audio_mp3_state() == LUA_AUDIO_MP3_ERROR) {
+        lua_pushstring(L, lua_audio_mp3_error());
+        lua_setfield(L, -2, "error");
+    }
     return 1;
 }
 
@@ -1174,6 +1292,7 @@ static int lua_audio_player_new(lua_State *L)
     ud->output_ref = output_ref;
     ud->playing = false;
     ud->stopped = false;
+    ud->mp3 = false;
     luaL_getmetatable(L, AUDIO_PLAYER_MT);
     lua_setmetatable(L, -2);
     return 1;
@@ -1182,14 +1301,24 @@ static int lua_audio_player_new(lua_State *L)
 static int lua_audio_play(lua_State *L)
 {
     const char *name = luaL_checkstring(L, 1);
-    char path[AUDIO_PATH_MAX];
+    if (lua_audio_mp3_is_url(name)) {
+        lua_pushboolean(L, lua_audio_mp3_play(name, 0, cap_lua_runtime_job_id(L)));
+        return 1;
+    }
 
-    if (!resolve_audio_path(L, name, path, sizeof(path))) {
+    char path[AUDIO_PATH_MAX];
+    bool is_mp3 = false;
+
+    if (!resolve_play_path(L, name, path, sizeof(path), &is_mp3)) {
         return luaL_error(L,
                           "audio.play: '%s' is outside the app/data roots or uses '..'",
                           name);
     }
 
+    if (is_mp3) {
+        lua_pushboolean(L, lua_audio_mp3_play(path, 0, cap_lua_runtime_job_id(L)));
+        return 1;
+    }
     lua_pushboolean(L, ai_audio_play_ogg_file(path));
     return 1;
 }
@@ -1210,6 +1339,11 @@ static const luaL_Reg audio_funcs[] = {
     {"is_available", lua_audio_is_available},
     {NULL, NULL},
 };
+
+void lua_audio_exit_cleanup(lua_State *L)
+{
+    lua_audio_mp3_cleanup_job(cap_lua_runtime_job_id(L));
+}
 
 int luaopen_audio(lua_State *L)
 {
@@ -1253,6 +1387,7 @@ int luaopen_audio(lua_State *L)
     lua_setfield(L, -2, "__index");
     lua_pop(L, 1);
 
+    (void)lua_audio_mp3_init();
     luaL_newlib(L, audio_funcs);
     return 1;
 }

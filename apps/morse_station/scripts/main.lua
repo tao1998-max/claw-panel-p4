@@ -247,15 +247,9 @@ bg:clear_flag("CLICKABLE")
 if ok_image and image then
   local ok, frame = pcall(image.load_file, app_dir .. "/assets/img/bg.jpg")
   if ok and frame then
-    local ok2, rgb = pcall(image.convert, frame, image.RGB565)
-    frame:release()
-    if ok2 and rgb then
-      local ok3, data = pcall(rgb.data, rgb)
-      rgb:release()
-      if ok3 and data then
-        pcall(bg.set_raw_rgb565, bg, W, H, data)
-      end
-    end
+    -- Decode + RGB565 conversion once; no Lua string and no second copy.
+    pcall(bg.set_frame, bg, frame)
+    pcall(frame.release, frame)
   end
 end
 

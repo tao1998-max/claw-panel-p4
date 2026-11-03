@@ -10,6 +10,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/event_groups.h>
+#include <freertos/semphr.h>
 #include <esp_timer.h>
 #include <model_path.h>
 #include "esp_audio_enc.h"
@@ -110,11 +111,17 @@ public:
     void Initialize(AudioCodec* codec);
     void Start();
     void Stop();
+    /* Pause playback/input tasks and wait for them to exit, so another owner
+     * can reconfigure the shared codec. Resume() restarts tasks and restores
+     * the wake-word / voice-processing state captured by PauseAndWait(). */
+    bool PauseAndWait(uint32_t timeout_ms);
+    void Resume();
     void EncodeWakeWord();
     std::unique_ptr<AudioStreamPacket> PopWakeWordPacket();
     const std::string& GetLastWakeWord() const;
     bool IsVoiceDetected() const { return voice_detected_; }
     bool IsIdle();
+    bool IsStopped() const { return service_stopped_; }
     void WaitForPlaybackQueueEmpty();
     bool IsWakeWordRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING; }
     bool IsAudioProcessorRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_PROCESSOR_RUNNING; }
@@ -197,6 +204,8 @@ private:
     bool voice_detected_ = false;
     bool service_stopped_ = true;
     bool audio_input_need_warmup_ = false;
+    SemaphoreHandle_t task_exit_sem_ = nullptr;
+    EventBits_t paused_bits_ = 0;
 
     esp_timer_handle_t audio_power_timer_ = nullptr;
     std::chrono::steady_clock::time_point last_input_time_;

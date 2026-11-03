@@ -335,6 +335,9 @@ static void rail_apply_state(void)
     for (int i = 0; i < CAT_COUNT; i++) {
         bool on = (i == (int)s_cat);
         lv_obj_t *item = s_rail_item[i];
+        if (item == NULL) {
+            continue;  /* CAT_AI entry is intentionally absent from the rail */
+        }
 
         lv_obj_set_style_bg_color(item, lv_color_hex(UI_COLOR_ACCENT_DEEP), 0);
         lv_obj_set_style_bg_grad_color(item, lv_color_hex(UI_COLOR_VIOLET), 0);
@@ -389,6 +392,13 @@ static void rail_build(lv_obj_t *parent)
     ui_divider_create(rail, 20, 84, RAIL_W - 40);
 
     for (int i = 0; i < CAT_COUNT; i++) {
+#if CONFIG_TEMPLATE_ENABLE_XIAOZHI
+        /* 小智 AI 入口已移到标题栏的灵动岛，设置栏不再重复显示。
+         * 仍可通过灵动岛面板里的齿轮进入本页的 AI 分类。 */
+        if (i == CAT_AI) {
+            continue;
+        }
+#endif
         int y = 98 + i * (RAIL_ITEM_H + 6);
 
         lv_obj_t *item = lv_obj_create(rail);
@@ -1378,6 +1388,16 @@ static void settings_destroy(void)
     s_wifi_dot = NULL;
     s_wifi_badge = NULL;
     s_wifi_disc = NULL;
+}
+
+void page_settings_open_ai(void)
+{
+#if CONFIG_TEMPLATE_ENABLE_XIAOZHI
+    ui_shell_show(&page_settings);
+    s_cat = CAT_AI;
+    rail_apply_state();
+    build_detail();
+#endif
 }
 
 const ui_page_t page_settings = {

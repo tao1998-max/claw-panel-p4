@@ -34,6 +34,7 @@ typedef struct {
     char *display_name;
     char *entry;
     char *icon;
+    char *version;
     char *args_json;
     int order;
     bool visible;
@@ -164,6 +165,7 @@ static void free_entry(app_registry_owned_entry_t *entry)
     free(entry->display_name);
     free(entry->entry);
     free(entry->icon);
+    free(entry->version);
     free(entry->args_json);
     memset(entry, 0, sizeof(*entry));
 }
@@ -208,16 +210,33 @@ static esp_err_t parse_manifest(const char *app_id, const char *app_dir, app_reg
     cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");
     cJSON *entry = cJSON_GetObjectItemCaseSensitive(root, "entry");
     cJSON *icon = cJSON_GetObjectItemCaseSensitive(root, "icon");
+    cJSON *version = cJSON_GetObjectItemCaseSensitive(root, "version");
     cJSON *display_name = cJSON_GetObjectItemCaseSensitive(root, "display_name");
     cJSON *args = cJSON_GetObjectItemCaseSensitive(root, "args");
     cJSON *order = cJSON_GetObjectItemCaseSensitive(root, "order");
     cJSON *visible = cJSON_GetObjectItemCaseSensitive(root, "visible");
     bool has_icon = icon != NULL;
     bool has_args = args != NULL;
+    bool has_version = version != NULL;
+    bool version_ok = false;
+    if (!has_version) {
+        version_ok = true;
+    } else if (cJSON_IsString(version) && version->valuestring && version->valuestring[0]) {
+        size_t len = strlen(version->valuestring);
+        version_ok = len <= 31;
+        for (size_t i = 0; version_ok && i < len; i++) {
+            char ch = version->valuestring[i];
+            if (!((ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') ||
+                  (ch >= 'a' && ch <= 'z') || ch == '.' || ch == '-' || ch == '_' || ch == '+')) {
+                version_ok = false;
+            }
+        }
+    }
     if (!cJSON_IsNumber(schema) || schema->valuedouble != (double)schema->valueint || schema->valueint != APP_REGISTRY_SCHEMA_VERSION ||
             !cJSON_IsString(id) || !id->valuestring || !app_registry_id_is_valid(id->valuestring) || strcmp(id->valuestring, app_id) != 0 ||
             !cJSON_IsString(entry) || !entry->valuestring || !relative_path_is_valid(entry->valuestring) || !has_suffix(entry->valuestring, ".lua") ||
             (has_icon && (!cJSON_IsString(icon) || !relative_path_is_valid(icon->valuestring) || (!has_suffix(icon->valuestring, ".jpg") && !has_suffix(icon->valuestring, ".jpeg")))) ||
+            !version_ok ||
             (display_name && (!cJSON_IsString(display_name) || !display_name->valuestring || !display_name->valuestring[0])) || (has_args && !cJSON_IsObject(args)) ||
             (order && (!cJSON_IsNumber(order) || order->valuedouble != (double)order->valueint)) || (visible && !cJSON_IsBool(visible))) {
         err = ESP_ERR_INVALID_ARG;
@@ -229,11 +248,13 @@ static esp_err_t parse_manifest(const char *app_id, const char *app_dir, app_reg
     out->display_name = strdup(display_name ? display_name->valuestring : app_id);
     out->entry = path_join_dup(app_dir, entry->valuestring);
     out->icon = has_icon ? path_join_dup(app_dir, icon->valuestring) : NULL;
+    out->version = has_version ? strdup(version->valuestring) : NULL;
     out->args_json = has_args ? cJSON_PrintUnformatted(args) : strdup("{}");
     out->order = order ? order->valueint : 0;
     out->visible = visible ? cJSON_IsTrue(visible) : true;
     out->manage_mode = manage_mode;
-    if (!out->app_id || !out->app_dir || !out->display_name || !out->entry || !out->args_json || (has_icon && !out->icon)) {
+    if (!out->app_id || !out->app_dir || !out->display_name || !out->entry || !out->args_json ||
+        (has_icon && !out->icon) || (has_version && !out->version)) {
         err = ESP_ERR_NO_MEM;
         goto cleanup;
     }
@@ -541,6 +562,7 @@ esp_err_t app_registry_foreach(app_registry_entry_cb_t callback, void *user_ctx)
             .display_name = entry->display_name,
             .entry = entry->entry,
             .icon = entry->icon,
+            .version = entry->version,
             .args_json = entry->args_json,
             .order = entry->order,
             .visible = entry->visible,

@@ -30,7 +30,8 @@ static const char *LUA_API_HINT =
     "  claw.file.write only below data/, max 16 KB per call; read max 64 KB,\n"
     "  claw.json.encode(value), claw.json.decode(text),\n"
     "  claw.panel.set_volume(pct), claw.panel.set_brightness(pct),\n"
-    "  claw.panel.status(), claw.panel.show_message(text), claw.panel.demo(on).\n"
+    "  claw.panel.status(), claw.panel.show_message(text), claw.panel.demo(on),\n"
+    "  claw.speak(text[, timeout_ms])  (Doubao TTS; needs /api/tts/config).\n"
     "A JSON object is available as both `args` and claw.get_args().\n"
     "No io/os/debug/package/require. Memory is capped, execution is time limited.\n";
 

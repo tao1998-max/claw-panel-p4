@@ -54,6 +54,33 @@ def read_json(path: Path, report: Report):
     return None
 
 
+def jpeg_info(path: Path):
+    """Return (kind, width, height) for a JPEG file, or None."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 4 or data[0] != 0xFF or data[1] != 0xD8:
+        return None
+    i = 2
+    while i + 4 <= len(data):
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+            i += 2
+            continue
+        length = int.from_bytes(data[i + 2:i + 4], "big")
+        if marker in (0xC0, 0xC1, 0xC2):
+            height = int.from_bytes(data[i + 5:i + 7], "big")
+            width = int.from_bytes(data[i + 7:i + 9], "big")
+            kind = "baseline" if marker == 0xC0 else ("extended" if marker == 0xC1 else "progressive")
+            return kind, width, height
+        i += 2 + length
+    return None
+
+
 def validate_launcher(app_dir: Path, report: Report, expected_id: str):
     manifest_path = app_dir / "launcher.json"
     if not manifest_path.is_file():
@@ -84,11 +111,31 @@ def validate_launcher(app_dir: Path, report: Report, expected_id: str):
             report.error(f"entry Lua is {entry_path.stat().st_size} bytes (limit 64 KiB)")
 
     icon = data.get("icon")
-    if icon is not None:
-        if not isinstance(icon, str) or not icon.lower().endswith((".jpg", ".jpeg")) or not is_relative_inside(icon):
-            report.error("launcher icon must be a package-relative .jpg/.jpeg path")
-        elif not safe_join(app_dir, icon).is_file():
+    if icon is None:
+        report.warn("no launcher icon; the home page will show a generated fallback")
+    elif not isinstance(icon, str) or not icon.lower().endswith((".jpg", ".jpeg")) or not is_relative_inside(icon):
+        report.error("launcher icon must be a package-relative .jpg/.jpeg path")
+    else:
+        icon_path = safe_join(app_dir, icon)
+        if not icon_path.is_file():
             report.warn(f"launcher icon is referenced but missing: {icon}")
+        else:
+            info = jpeg_info(icon_path)
+            if info is None:
+                report.error(f"launcher icon is not a readable JPEG: {icon}")
+            else:
+                kind, width, height = info
+                if kind == "progressive":
+                    report.error(f"launcher icon must be baseline JPEG (progressive rejected): {icon}")
+                if (width, height) != (96, 96):
+                    report.warn(f"launcher icon is {width}x{height}; 96x96 is the home grid size")
+    version = data.get("version")
+    if version is None:
+        report.warn("no launcher version (recommended: MAJOR.MINOR.PATCH)")
+    elif not isinstance(version, str) or not version or len(version) > 31 or             any(ch not in "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._+-" for ch in version):
+        report.error("launcher version must be 1-31 chars of [0-9A-Za-z._+-]")
+    elif not re.match(r"^\d+\.\d+\.\d+$", version):
+        report.warn(f"launcher version {version!r} is not MAJOR.MINOR.PATCH")
     if "args" in data and not isinstance(data["args"], dict):
         report.error("launcher args must be an object")
     if "order" in data and not isinstance(data["order"], int):

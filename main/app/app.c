@@ -3,13 +3,18 @@
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "freertos/idf_additions.h"
+#include "freertos/task.h"
 #include "nvs_flash.h"
 #include "bsp/esp-bsp.h"
 
 #include "ai.h"
+#include "ai_audio.h"
 #include "app_config.h"
+#include "cap_lua.h"
 #include "claw_panel_hooks.h"
 #include "claw_port.h"
+#include "claw_tts.h"
 #include "hw.h"
 #include "lua_module_audio.h"
 #include "settings.h"
@@ -32,13 +37,24 @@ static void nvs_init(void)
 
 static void peripherals_init(void)
 {
-    /* 显示已在首屏创建前初始化；其余模块失败后继续启动其它外设。 */
+    /* Network init (Wi-Fi/C6 and Ethernet PHY) is deliberately not here:
+     * Ethernet takes ~4.7 s and would otherwise serialize the whole boot.
+     * It runs in network_init_task() in parallel with the UI/Claw startup. */
     hw_audio_init();
     hw_storage_init();
     hw_rs485_init();
-    hw_eth_init();
     hw_camera_init();
+}
+
+static void network_init_task(void *arg)
+{
+    (void)arg;
+    /* Wi-Fi first: the C6 SDIO transport + association + DHCP is the long
+     * pole for cloud/IM features. Ethernet follows; its PHY reset no longer
+     * blocks the UI, app grid, or Claw. */
     hw_wifi_init();
+    hw_eth_init();
+    vTaskDeleteWithCaps(NULL);
 }
 
 static void log_hardware_summary(void)
@@ -51,6 +67,48 @@ static void log_hardware_summary(void)
     }
 }
 
+static bool tts_play_pcm(const int16_t *pcm, size_t samples, uint32_t timeout_ms)
+{
+    if (pcm == NULL || samples == 0) {
+        return false;
+    }
+    if (ai_is_busy()) {
+        return false;
+    }
+    if (ai_audio_available()) {
+        return ai_audio_write_pcm(pcm, samples, timeout_ms);
+    }
+
+    /* XiaoZhi is disabled: the assistant AudioService is not running, so use
+     * the ES8311 exclusive path at the same 16 kHz rate. */
+    if (ai_audio_init() != ESP_OK) {
+        return false;
+    }
+    if (!ai_audio_exclusive_begin(16000, 2)) {
+        return false;
+    }
+    bool ok = true;
+    static int16_t stereo[2048];
+    size_t offset = 0;
+    while (offset < samples) {
+        size_t count = samples - offset;
+        if (count > 1024) {
+            count = 1024;
+        }
+        for (size_t i = 0; i < count; i++) {
+            stereo[2 * i] = pcm[offset + i];
+            stereo[2 * i + 1] = pcm[offset + i];
+        }
+        if (!ai_audio_exclusive_write(stereo, (int)count)) {
+            ok = false;
+            break;
+        }
+        offset += count;
+    }
+    ai_audio_exclusive_end();
+    return ok;
+}
+
 static void log_internal(const char *stage)
 {
     multi_heap_info_t info;
@@ -59,6 +117,26 @@ static void log_internal(const char *stage)
              (unsigned)(info.total_free_bytes / 1024),
              (unsigned)(info.largest_free_block / 1024),
              (unsigned)(info.minimum_free_bytes / 1024));
+}
+
+/* IM gateways need DNS and an outbound socket. Starting them in app_start()
+ * happens before Wi-Fi gets an IP, so QQ/Feishu/TG log failed DNS/token
+ * requests and retry for several seconds. Wait for Wi-Fi or Ethernet to get
+ * an address, then apply the persisted IM credentials. */
+static void im_start_task(void *arg)
+{
+    app_config_t *config = (app_config_t *)arg;
+
+    /* hw_wifi_is_connected() turns true on STA link-up, before DHCP gives an
+     * address. Require a non-empty Wi-Fi IP, or an Ethernet lease. */
+    while (!(hw_wifi_is_connected() && hw_wifi_ip()[0]) && !hw_eth_has_ip()) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    /* Let the netif/DNS state settle after the DHCP event. */
+    vTaskDelay(pdMS_TO_TICKS(500));
+    ESP_LOGI(TAG, "network ready, starting IM gateways");
+    (void)app_config_apply_im(config);
+    vTaskDeleteWithCaps(NULL);
 }
 
 void app_start(void)
@@ -74,6 +152,7 @@ void app_start(void)
     /* 小智：挂载共享 FAT、把聊天字体和唤醒词模型读进 PSRAM。
      * 必须在 ui_init() 之前，ai_ui_init() 要用字体 buffer。 */
     ai_early_init();
+    claw_tts_set_playback(tts_play_pcm);
 
     /* 先初始化显示与触摸并创建首屏，其余状态由 LVGL 定时器刷新。 */
     if (hw_display_init() == ESP_OK) {
@@ -84,6 +163,16 @@ void app_start(void)
         ESP_LOGE(TAG, "Display initialization failed; running headless");
     }
     log_internal("display");
+
+    /* The UI is already alive; bring up networking concurrently instead of
+     * blocking app_start() on the C6 SDIO handshake and the Ethernet PHY. */
+    if (xTaskCreateWithCaps(network_init_task, "net_init", 8192, NULL, 3,
+                            NULL,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        ESP_LOGW(TAG, "network init task creation failed, falling back to sync");
+        hw_wifi_init();
+        hw_eth_init();
+    }
 
     peripherals_init();
     log_internal("peripherals");
@@ -114,6 +203,12 @@ void app_start(void)
     if (audio_mod_err != ESP_OK) {
         ESP_LOGW(TAG, "audio Lua module queue failed: %s",
                  esp_err_to_name(audio_mod_err));
+    } else {
+        esp_err_t audio_cleanup_err = cap_lua_register_exit_cleanup(lua_audio_exit_cleanup);
+        if (audio_cleanup_err != ESP_OK) {
+            ESP_LOGW(TAG, "audio Lua cleanup registration failed: %s",
+                     esp_err_to_name(audio_cleanup_err));
+        }
     }
     /* Apps and app fonts may live on the SD card (<mount>/apps); the scan skips
      * the root when no card is mounted, so the home page is simply empty
@@ -122,8 +217,13 @@ void app_start(void)
     if (claw_err != ESP_OK) {
         ESP_LOGW(TAG, "Claw runtime not available: %s", esp_err_to_name(claw_err));
     } else if (web_config_ok) {
-        /* IM groups exist now; apply persisted credentials and start gateways. */
-        (void)app_config_apply_im(&web_config);
+        /* IM gateways need an IP for DNS/TLS; start them from a task after
+         * Wi-Fi or Ethernet is actually online. */
+        if (xTaskCreateWithCaps(im_start_task, "im_start", 8192, &web_config, 3,
+                                NULL,
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+            ESP_LOGW(TAG, "IM start task creation failed");
+        }
     }
     log_internal("claw");
 

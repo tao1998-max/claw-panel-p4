@@ -12,6 +12,7 @@
 static const char *TAG = "hw.eth";
 
 static esp_eth_handle_t s_eth_handle;
+static bool s_eth_has_ip;
 
 static void eth_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -23,6 +24,7 @@ static void eth_event_handler(void *arg, esp_event_base_t base, int32_t id, void
         break;
     case ETHERNET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "link down");
+        s_eth_has_ip = false;
         g_hw[HW_ETH].ok = false;
         snprintf(g_hw[HW_ETH].detail, sizeof(g_hw[HW_ETH].detail), "no cable");
         break;
@@ -38,10 +40,16 @@ static void got_ip_handler(void *arg, esp_event_base_t base, int32_t id, void *d
 {
     ip_event_got_ip_t *ev = (ip_event_got_ip_t *)data;
     ESP_LOGI(TAG, "got ip: " IPSTR, IP2STR(&ev->ip_info.ip));
+    s_eth_has_ip = true;
     g_hw[HW_ETH].ok = true;
     snprintf(g_hw[HW_ETH].detail, sizeof(g_hw[HW_ETH].detail),
              "IP " IPSTR, IP2STR(&ev->ip_info.ip));
     hw_sntp_start_once();
+}
+
+bool hw_eth_has_ip(void)
+{
+    return s_eth_has_ip;
 }
 
 esp_err_t hw_eth_init(void)

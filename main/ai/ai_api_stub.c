@@ -28,5 +28,7 @@ void ai_set_muted(bool muted) { (void)muted; }
 bool ai_is_muted(void) { return false; }
 bool ai_wake_word_enabled(void) { return false; }
 void ai_set_wake_word_enabled(bool enabled) { (void)enabled; }
+bool ai_audio_pause_for_exclusive(void) { return false; }
+void ai_audio_resume_after_exclusive(void) { }
 
 #endif

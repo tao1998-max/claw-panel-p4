@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "mqtt_panel",
+  "display_name": "MQTT Panel",
+  "entry": "scripts/main.lua",
+  "args": {
+    "broker": "mqtt://192.168.0.107:1884",
+    "base_topic": "panel/demo"
+  },
+  "order": 30,
+  "visible": true,
+  "version": "1.0.0",
+  "icon": "assets/icon.jpg"
+}

@@ -12,6 +12,10 @@ Es8311AudioCodec::Es8311AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
     input_channels_ = 1; // 输入通道数
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
+    base_input_rate_ = input_sample_rate;
+    base_output_rate_ = output_sample_rate;
+    base_input_channels_ = input_channels_;
+    base_output_channels_ = output_channels_;
     pa_pin_ = pa_pin;
     pa_inverted_ = pa_inverted;
     input_gain_ = 30;
@@ -59,7 +63,16 @@ Es8311AudioCodec::Es8311AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
 }
 
 Es8311AudioCodec::~Es8311AudioCodec() {
-    esp_codec_dev_delete(dev_);
+    if (exclusive_dev_ != nullptr) {
+        esp_codec_dev_close(exclusive_dev_);
+        esp_codec_dev_delete(exclusive_dev_);
+        exclusive_dev_ = nullptr;
+    }
+    if (dev_ != nullptr) {
+        esp_codec_dev_close(dev_);
+        esp_codec_dev_delete(dev_);
+        dev_ = nullptr;
+    }
 
     audio_codec_delete_codec_if(codec_if_);
     audio_codec_delete_ctrl_if(ctrl_if_);
@@ -160,6 +173,9 @@ void Es8311AudioCodec::SetOutputVolume(int volume) {
     if (dev_ != nullptr) {
         ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(dev_, volume));
     }
+    if (exclusive_dev_ != nullptr) {
+        ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(exclusive_dev_, volume));
+    }
     AudioCodec::SetOutputVolume(volume);
 }
 
@@ -199,4 +215,81 @@ int Es8311AudioCodec::Write(const int16_t* data, int samples) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(dev_, (void*)data, samples * sizeof(int16_t)));
     }
     return samples;
+}
+
+bool Es8311AudioCodec::BeginExclusiveOutput(int sample_rate, int channels) {
+    if (codec_if_ == nullptr || sample_rate <= 0 || channels <= 0 || channels > 2) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    AudioCodec::EnableInput(false);
+    AudioCodec::EnableOutput(false);
+    if (dev_ != nullptr) {
+        esp_codec_dev_close(dev_);
+        esp_codec_dev_delete(dev_);
+        dev_ = nullptr;
+    }
+    if (exclusive_dev_ != nullptr) {
+        esp_codec_dev_close(exclusive_dev_);
+        esp_codec_dev_delete(exclusive_dev_);
+        exclusive_dev_ = nullptr;
+    }
+
+    esp_codec_dev_cfg_t dev_cfg = {
+        .dev_type = ESP_CODEC_DEV_TYPE_OUT,
+        .codec_if = codec_if_,
+        .data_if = data_if_,
+    };
+    exclusive_dev_ = esp_codec_dev_new(&dev_cfg);
+    if (exclusive_dev_ == nullptr) {
+        return false;
+    }
+    esp_codec_dev_sample_info_t fs = {
+        .bits_per_sample = 16,
+        .channel = (uint8_t)channels,
+        .channel_mask = 0,
+        .sample_rate = (uint32_t)sample_rate,
+        .mclk_multiple = 0,
+    };
+    if (esp_codec_dev_open(exclusive_dev_, &fs) != ESP_OK) {
+        esp_codec_dev_delete(exclusive_dev_);
+        exclusive_dev_ = nullptr;
+        return false;
+    }
+    esp_codec_dev_set_out_vol(exclusive_dev_, output_volume_);
+    if (pa_pin_ != GPIO_NUM_NC) {
+        gpio_set_level(pa_pin_, pa_inverted_ ? 0 : 1);
+    }
+    return true;
+}
+
+int Es8311AudioCodec::ExclusiveWrite(const int16_t *data, int frames) {
+    if (data == nullptr || frames <= 0) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    if (exclusive_dev_ == nullptr) {
+        return 0;
+    }
+    esp_err_t err = esp_codec_dev_write(exclusive_dev_, (void *)data,
+                                        frames * 2 * (int)sizeof(int16_t));
+    return err == ESP_OK ? frames : 0;
+}
+
+void Es8311AudioCodec::EndExclusiveOutput() {
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    if (exclusive_dev_ != nullptr) {
+        esp_codec_dev_close(exclusive_dev_);
+        esp_codec_dev_delete(exclusive_dev_);
+        exclusive_dev_ = nullptr;
+    }
+    if (pa_pin_ != GPIO_NUM_NC) {
+        gpio_set_level(pa_pin_, pa_inverted_ ? 1 : 0);
+    }
+    input_sample_rate_ = base_input_rate_;
+    output_sample_rate_ = base_output_rate_;
+    input_channels_ = base_input_channels_;
+    output_channels_ = base_output_channels_;
+    input_enabled_ = false;
+    output_enabled_ = false;
 }

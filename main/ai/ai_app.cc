@@ -142,7 +142,7 @@ esp_err_t AiApp::Start()
     audio_service_->Start();
     codec->SetOutputVolume(ai_audio_get_volume());
     ai_audio_set_play_pcm_callback([this](std::vector<int16_t> &&pcm) {
-        if (!running_.load() || audio_service_ == nullptr) {
+        if (!running_.load() || audio_service_ == nullptr || audio_service_->IsStopped()) {
             return false;
         }
         const ai_state_t state = state_.load();
@@ -153,7 +153,7 @@ esp_err_t AiApp::Start()
         return audio_service_->PlayPcm(std::move(pcm));
     });
     ai_audio_set_play_ogg_callback([this](const uint8_t *data, size_t size) {
-        if (!running_.load() || audio_service_ == nullptr) {
+        if (!running_.load() || audio_service_ == nullptr || audio_service_->IsStopped()) {
             return false;
         }
         const ai_state_t state = state_.load();
@@ -168,13 +168,14 @@ esp_err_t AiApp::Start()
     });
     ai_audio_set_input_callbacks(
         [this](size_t max_samples) {
-            if (!running_.load() || muted_.load() || audio_service_ == nullptr) {
+            if (!running_.load() || muted_.load() || audio_service_ == nullptr ||
+                audio_service_->IsStopped()) {
                 return false;
             }
             return audio_service_->OpenInputTap(max_samples);
         },
         [this](int16_t *out, size_t samples, uint32_t timeout_ms) {
-            if (!running_.load() || audio_service_ == nullptr) {
+            if (!running_.load() || audio_service_ == nullptr || audio_service_->IsStopped()) {
                 return (size_t)0;
             }
             return audio_service_->ReadInputTap(out, samples, timeout_ms);
@@ -238,6 +239,31 @@ void AiApp::Stop()
         audio_service_->Stop();
     }
     state_ = AI_STATE_DISABLED;
+}
+
+bool AiApp::PauseAudio(uint32_t timeout_ms)
+{
+    if (IsBusy()) {
+        return false;
+    }
+    if (audio_service_ == nullptr || !running_.load() || audio_service_->IsStopped()) {
+        /* Assistant disabled/not started: the codec is free already. */
+        paused_audio_ = false;
+        return true;
+    }
+    paused_audio_ = audio_service_->PauseAndWait(timeout_ms);
+    return paused_audio_;
+}
+
+void AiApp::ResumeAudio()
+{
+    if (paused_audio_ && audio_service_ != nullptr) {
+        audio_service_->Resume();
+        /* Put the assistant back in its idle mode (wake word on, audio
+         * processor off) even if no feature bit was set when we paused. */
+        SyncIdleAudio();
+    }
+    paused_audio_ = false;
 }
 
 bool AiApp::IsBusy() const

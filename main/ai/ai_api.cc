@@ -150,4 +150,14 @@ extern "C" void ai_set_wake_word_enabled(bool enabled)
     ai_settings_set_wake_word(enabled);
 }
 
+extern "C" bool ai_audio_pause_for_exclusive(void)
+{
+    return AiApp::GetInstance().PauseAudio(3000);
+}
+
+extern "C" void ai_audio_resume_after_exclusive(void)
+{
+    AiApp::GetInstance().ResumeAudio();
+}
+
 #endif

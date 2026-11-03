@@ -757,8 +757,9 @@ lv_display_t *bsp_display_start_with_config(const bsp_display_cfg_t *cfg)
     assert(cfg != NULL);
     BSP_ERROR_CHECK_RETURN_NULL(lvgl_port_init(&cfg->lvgl_port_cfg));
 
-    BSP_ERROR_CHECK_RETURN_NULL(bsp_display_brightness_init());
-
+    /* bsp_display_lcd_init() -> bsp_display_new_with_handles() already
+     * initializes the backlight LEDC. Calling it here as well reconfigured
+     * the same channel and logged "GPIO 23 is not usable". */
     BSP_NULL_CHECK(disp = bsp_display_lcd_init(cfg), NULL);
     disp_lvgl = disp;
     // bsp_display_lock(-1);

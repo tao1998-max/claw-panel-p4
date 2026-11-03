@@ -14,23 +14,26 @@
 #include "cbin_font.h"
 #include "i18n.h"
 #include "page_home.h"
+#include "page_settings.h"
 #include "ui_shell.h"
 #include "ui_theme.h"
 #include "ui_widgets.h"
 
 static const char *TAG = "ai.ui";
 
-#define ROBOT_X 936
-#define ROBOT_Y 452
-#define ROBOT_SIZE 64
+/* Dynamic-Island style entry centred in the title bar. */
+#define ISLAND_W 200
+#define ISLAND_H 38
+#define ISLAND_X ((UI_SCREEN_W - ISLAND_W) / 2)
+#define ISLAND_Y ((UI_HEADER_H - ISLAND_H) / 2)
 #define CHAT_W 460
 #define CHAT_H 370
-#define CHAT_X (UI_SCREEN_W - 24 - CHAT_W)
-#define CHAT_Y (UI_HEADER_H + 8)
-#define MINI_W 320
-#define MINI_H 54
-#define MINI_X (ROBOT_X + ROBOT_SIZE - MINI_W)
-#define MINI_Y (ROBOT_Y - MINI_H - 12)
+#define CHAT_X ((UI_SCREEN_W - CHAT_W) / 2)
+#define CHAT_Y (UI_HEADER_H + 6)
+#define MINI_W 340
+#define MINI_H 52
+#define MINI_X ((UI_SCREEN_W - MINI_W) / 2)
+#define MINI_Y (UI_HEADER_H + 10)
 #define MINI_HIDE_MS 8000
 #define LOG_MAX 30
 #define LOG_TEXT_MAX 2048
@@ -71,11 +74,8 @@ static lv_font_t *s_chat_font;
 static lv_obj_t *s_root;
 static lv_obj_t *s_robot;
 static lv_obj_t *s_robot_ring;
-static lv_obj_t *s_visor;
-static lv_obj_t *s_eye_l;
-static lv_obj_t *s_eye_r;
-static lv_obj_t *s_mouth;
-static lv_obj_t *s_robot_dot;
+static lv_obj_t *s_island_label;
+static lv_obj_t *s_robot_icon;
 static lv_obj_t *s_unread;
 
 static lv_obj_t *s_outside;
@@ -191,24 +191,18 @@ static void ring_set_busy(bool busy)
 static void apply_state(ai_state_t state)
 {
     uint32_t color = state_color(state);
-    if (s_robot_dot) ui_dot_set_color(s_robot_dot, color);
+    if (s_island_label != NULL) {
+        lv_label_set_text_fmt(s_island_label, "小智 · %s", state_text(state));
+        lv_obj_set_style_text_color(s_island_label, lv_color_hex(color), 0);
+    }
 
-    uint32_t eye_color = UI_COLOR_ACCENT_SOFT;
-    if (state == AI_STATE_LISTENING) eye_color = UI_COLOR_CYAN;
-    else if (state == AI_STATE_SPEAKING) eye_color = UI_COLOR_VIOLET;
-    else if (state == AI_STATE_ERROR) eye_color = UI_COLOR_ERROR;
-    else if (state == AI_STATE_DISABLED) eye_color = UI_COLOR_DISABLED;
-    if (s_eye_l) lv_obj_set_style_bg_color(s_eye_l, lv_color_hex(eye_color), 0);
-    if (s_eye_r) lv_obj_set_style_bg_color(s_eye_r, lv_color_hex(eye_color), 0);
-    if (s_mouth) {
-        lv_obj_set_style_bg_color(s_mouth, lv_color_hex(eye_color), 0);
-        if (state == AI_STATE_SPEAKING) {
-            lv_obj_set_size(s_mouth, 8, 6);
-            lv_obj_set_style_radius(s_mouth, 3, 0);
-        } else {
-            lv_obj_set_size(s_mouth, 10, 2);
-            lv_obj_set_style_radius(s_mouth, 1, 0);
-        }
+    uint32_t icon_color = UI_COLOR_ACCENT_SOFT;
+    if (state == AI_STATE_LISTENING) icon_color = UI_COLOR_CYAN;
+    else if (state == AI_STATE_SPEAKING) icon_color = UI_COLOR_VIOLET;
+    else if (state == AI_STATE_ERROR) icon_color = UI_COLOR_ERROR;
+    else if (state == AI_STATE_DISABLED) icon_color = UI_COLOR_DISABLED;
+    if (s_robot_icon != NULL) {
+        lv_obj_set_style_text_color(s_robot_icon, lv_color_hex(icon_color), 0);
     }
     ring_set_busy(ai_is_busy());
 
@@ -390,10 +384,10 @@ static void open_chat(lv_obj_t *root)
     lv_obj_remove_flag(s_popover, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_popover, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
-    /* 指向机器人的小尾巴（旋转 45° 的方块，被卡片盖住上半部分）。 */
+    /* 指向标题栏胶囊岛的小尾巴（旋转 45° 的方块，被卡片盖住下半部分）。 */
     lv_obj_t *tail = lv_obj_create(s_popover);
     lv_obj_set_size(tail, 18, 18);
-    lv_obj_set_pos(tail, 419, 361);
+    lv_obj_set_pos(tail, (CHAT_W - 18) / 2, -9);
     lv_obj_set_style_bg_color(tail, lv_color_hex(UI_COLOR_PANEL), 0);
     lv_obj_set_style_bg_opa(tail, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(tail, 0, 0);
@@ -432,6 +426,22 @@ static void open_chat(lv_obj_t *root)
                                            UI_COLOR_MUTED, UI_FONT_ICON);
     lv_obj_center(close_icon);
     lv_obj_add_event_cb(close, [](lv_event_t *e) { (void)e; close_chat(true); }, LV_EVENT_CLICKED, NULL);
+
+    /* 小智 AI 设置入口（设置页左下角的入口已移除）。 */
+    lv_obj_t *ai_settings = lv_button_create(s_card);
+    lv_obj_set_pos(ai_settings, 354, 8);
+    lv_obj_set_size(ai_settings, 40, 40);
+    lv_obj_set_style_radius(ai_settings, UI_RADIUS_S, 0);
+    lv_obj_set_style_bg_color(ai_settings, lv_color_hex(UI_COLOR_TILE), 0);
+    lv_obj_set_style_border_width(ai_settings, 0, 0);
+    lv_obj_t *ai_settings_icon = ui_label_create(ai_settings, LV_SYMBOL_SETTINGS, 0, 0,
+                                                 UI_COLOR_MUTED, UI_FONT_ICON);
+    lv_obj_center(ai_settings_icon);
+    lv_obj_add_event_cb(ai_settings, [](lv_event_t *e) {
+        (void)e;
+        close_chat(true);
+        page_settings_open_ai();
+    }, LV_EVENT_CLICKED, NULL);
 
     s_msg_list = lv_obj_create(s_card);
     lv_obj_set_pos(s_msg_list, 16, 56);
@@ -569,7 +579,7 @@ static uint32_t mini_role_color(ai_role_t role)
 
 static lv_obj_t *mini_create(lv_obj_t *root)
 {
-    /* 外层只负责定位和点击；小尾巴在下、卡片在上，卡片盖住尾巴的上半段。 */
+    /* 胶囊岛下方的小气泡：尾巴在上、卡片在下，卡片盖住尾巴的下半段。 */
     lv_obj_t *box = lv_obj_create(root);
     lv_obj_set_pos(box, MINI_X, MINI_Y);
     lv_obj_set_size(box, MINI_W, MINI_H);
@@ -583,7 +593,7 @@ static lv_obj_t *mini_create(lv_obj_t *root)
 
     lv_obj_t *tail = lv_obj_create(box);
     lv_obj_set_size(tail, 16, 16);
-    lv_obj_set_pos(tail, MINI_W - 46, MINI_H - 9);
+    lv_obj_set_pos(tail, (MINI_W - 16) / 2, -8);
     lv_obj_set_style_bg_color(tail, lv_color_hex(UI_COLOR_PANEL), 0);
     lv_obj_set_style_bg_opa(tail, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(tail, 0, 0);
@@ -853,12 +863,14 @@ void ai_ui_on_reply_done(void)
 
 void ai_ui_attach(lv_obj_t *root)
 {
-    if (!ai_available() || !ai_enabled() || root == NULL) return;
+    /* Keep the island visible even when XiaoZhi is disabled: it is now the
+     * only entry to the AI settings page, where the assistant is re-enabled. */
+    if (!ai_available() || root == NULL) return;
     s_root = root;
 
     s_robot_ring = lv_obj_create(root);
-    lv_obj_set_pos(s_robot_ring, ROBOT_X - 6, ROBOT_Y - 6);
-    lv_obj_set_size(s_robot_ring, ROBOT_SIZE + 12, ROBOT_SIZE + 12);
+    lv_obj_set_pos(s_robot_ring, ISLAND_X - 4, ISLAND_Y - 4);
+    lv_obj_set_size(s_robot_ring, ISLAND_W + 8, ISLAND_H + 8);
     lv_obj_set_style_bg_opa(s_robot_ring, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_color(s_robot_ring, lv_color_hex(UI_COLOR_ACCENT), 0);
     lv_obj_set_style_border_width(s_robot_ring, 2, 0);
@@ -868,64 +880,39 @@ void ai_ui_attach(lv_obj_t *root)
     lv_obj_remove_flag(s_robot_ring, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(s_robot_ring, LV_OBJ_FLAG_HIDDEN);
 
-    s_robot = ui_gradient_tile_create(root, ROBOT_X, ROBOT_Y, ROBOT_SIZE, ROBOT_SIZE,
-                                      22, UI_COLOR_ACCENT_DEEP, UI_COLOR_VIOLET);
+    /* Dynamic Island: black capsule centred in the 64 px title bar. */
+    s_robot = ui_gradient_tile_create(root, ISLAND_X, ISLAND_Y, ISLAND_W, ISLAND_H,
+                                      19, 0x03050A, 0x0A0F1A);
     lv_obj_add_flag(s_robot, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(s_robot, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
-    lv_obj_set_style_border_color(s_robot, lv_color_hex(UI_COLOR_ACCENT_SOFT), 0);
+    lv_obj_set_style_bg_color(s_robot, lv_color_hex(0x03050A), 0);
+    lv_obj_set_style_bg_grad_color(s_robot, lv_color_hex(0x0A0F1A), 0);
+    lv_obj_set_style_bg_grad_dir(s_robot, LV_GRAD_DIR_HOR, 0);
+    lv_obj_set_style_border_color(s_robot, lv_color_hex(UI_COLOR_BORDER), 0);
     lv_obj_set_style_border_width(s_robot, 1, 0);
-    lv_obj_set_style_border_opa(s_robot, 90, 0);
-    lv_obj_set_style_shadow_width(s_robot, 18, 0);
-    lv_obj_set_style_shadow_color(s_robot, lv_color_hex(UI_COLOR_ACCENT), 0);
-    lv_obj_set_style_shadow_opa(s_robot, 55, 0);
+    lv_obj_set_style_border_opa(s_robot, 140, 0);
+    lv_obj_set_style_shadow_width(s_robot, 14, 0);
+    lv_obj_set_style_shadow_color(s_robot, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_shadow_opa(s_robot, 170, 0);
+    lv_obj_set_style_shadow_offset_y(s_robot, 4, 0);
 
-    /* 自定义机器人脸：深色面罩 + 两只发光眼睛 + 嘴。比 MDI 机器人字形精致。 */
-    s_visor = lv_obj_create(s_robot);
-    lv_obj_set_pos(s_visor, 12, 15);
-    lv_obj_set_size(s_visor, 40, 25);
-    lv_obj_set_style_bg_color(s_visor, lv_color_hex(0x050912), 0);
-    lv_obj_set_style_bg_opa(s_visor, 230, 0);
-    lv_obj_set_style_border_color(s_visor, lv_color_hex(UI_COLOR_ACCENT_SOFT), 0);
-    lv_obj_set_style_border_width(s_visor, 1, 0);
-    lv_obj_set_style_border_opa(s_visor, 55, 0);
-    lv_obj_set_style_radius(s_visor, 12, 0);
-    lv_obj_set_style_pad_all(s_visor, 0, 0);
-    lv_obj_remove_flag(s_visor, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_remove_flag(s_visor, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_remove_flag(s_visor, LV_OBJ_FLAG_CLICKABLE);
+    /* 岛内左侧的 MDI 笑脸机器人图标，颜色随 AI 状态变化。 */
+    s_robot_icon = ui_label_create(s_robot, UI_ICON_ROBOT_HAPPY, 0, 0,
+                                   UI_COLOR_ACCENT_SOFT, UI_FONT_ROBOT);
+    lv_obj_align(s_robot_icon, LV_ALIGN_LEFT_MID, 8, 0);
 
-    s_eye_l = lv_obj_create(s_visor);
-    lv_obj_set_pos(s_eye_l, 9, 9);
-    lv_obj_set_size(s_eye_l, 5, 7);
-    lv_obj_set_style_bg_color(s_eye_l, lv_color_hex(UI_COLOR_ACCENT_SOFT), 0);
-    lv_obj_set_style_bg_opa(s_eye_l, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(s_eye_l, 0, 0);
-    lv_obj_set_style_radius(s_eye_l, 2, 0);
-    lv_obj_remove_flag(s_eye_l, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_remove_flag(s_eye_l, LV_OBJ_FLAG_CLICKABLE);
-
-    s_eye_r = lv_obj_create(s_visor);
-    lv_obj_set_pos(s_eye_r, 26, 9);
-    lv_obj_set_size(s_eye_r, 5, 7);
-    lv_obj_set_style_bg_color(s_eye_r, lv_color_hex(UI_COLOR_ACCENT_SOFT), 0);
-    lv_obj_set_style_bg_opa(s_eye_r, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(s_eye_r, 0, 0);
-    lv_obj_set_style_radius(s_eye_r, 2, 0);
-    lv_obj_remove_flag(s_eye_r, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_remove_flag(s_eye_r, LV_OBJ_FLAG_CLICKABLE);
-
-    s_mouth = lv_obj_create(s_visor);
-    lv_obj_set_pos(s_mouth, 15, 19);
-    lv_obj_set_size(s_mouth, 10, 2);
-    lv_obj_set_style_bg_color(s_mouth, lv_color_hex(UI_COLOR_ACCENT_SOFT), 0);
-    lv_obj_set_style_bg_opa(s_mouth, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(s_mouth, 0, 0);
-    lv_obj_set_style_radius(s_mouth, 1, 0);
-    lv_obj_remove_flag(s_mouth, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_remove_flag(s_mouth, LV_OBJ_FLAG_CLICKABLE);
+    s_island_label = ui_label_create(s_robot, "", 0, 0, UI_COLOR_MUTED, UI_FONT_SMALL);
+    lv_obj_set_size(s_island_label, ISLAND_W - 68,
+                    lv_font_get_line_height(UI_FONT_SMALL));
+    lv_obj_align(s_island_label, LV_ALIGN_LEFT_MID, 48, 0);
+    lv_label_set_long_mode(s_island_label, LV_LABEL_LONG_DOT);
 
     lv_obj_add_event_cb(s_robot, [](lv_event_t *e) {
         (void)e;
+        if (!ai_enabled()) {
+            page_settings_open_ai();
+            return;
+        }
         if (s_chat_open) {
             close_chat(true);
             return;
@@ -943,21 +930,22 @@ void ai_ui_attach(lv_obj_t *root)
         }
     }, LV_EVENT_CLICKED, NULL);
 
-    s_robot_dot = ui_dot_create(root, ROBOT_X + ROBOT_SIZE - 10, ROBOT_Y + 4, 10);
-    lv_obj_add_flag(s_robot_dot, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
-    s_unread = ui_dot_create(root, ROBOT_X + 2, ROBOT_Y + 4, 10);
+    /* 未读红点挂在岛的右上角。 */
+    s_unread = ui_dot_create(root, ISLAND_X + ISLAND_W - 10, ISLAND_Y + 2, 10);
     ui_dot_set_color(s_unread, UI_COLOR_ERROR);
     lv_obj_add_flag(s_unread, LV_OBJ_FLAG_HIDDEN);
 
     /* 手动关闭完整对话后，新信息只用这个小气泡提示。
-     * 位置贴着机器人上方，文字过长时横向循环滚动。 */
+     * 位置在标题栏胶囊岛下方，文字过长时横向循环滚动。 */
     s_mini = mini_create(root);
 
     apply_state(ai_get_state());
     unread_update();
 #if CONFIG_TEMPLATE_XIAOZHI_AUTO_OPEN_CHAT
-    open_chat(root);
-    ai_ui_on_message(AI_ROLE_ASSISTANT, "你好，我是小智。");
+    if (ai_enabled()) {
+        open_chat(root);
+        ai_ui_on_message(AI_ROLE_ASSISTANT, "你好，我是小智。");
+    }
 #endif
 }
 
@@ -969,16 +957,12 @@ void ai_ui_detach(void)
     }
     if (s_robot != NULL) lv_obj_delete(s_robot);
     if (s_robot_ring != NULL) lv_obj_delete(s_robot_ring);
-    if (s_robot_dot != NULL) lv_obj_delete(s_robot_dot);
     if (s_unread != NULL) lv_obj_delete(s_unread);
     if (s_mini != NULL) lv_obj_delete(s_mini);
     s_robot = NULL;
     s_robot_ring = NULL;
-    s_visor = NULL;
-    s_eye_l = NULL;
-    s_eye_r = NULL;
-    s_mouth = NULL;
-    s_robot_dot = NULL;
+    s_island_label = NULL;
+    s_robot_icon = NULL;
     s_unread = NULL;
     s_mini = NULL;
     s_mini_label = NULL;

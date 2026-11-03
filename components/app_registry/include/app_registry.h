@@ -27,6 +27,7 @@ typedef struct {
     const char *display_name;
     const char *entry;
     const char *icon;
+    const char *version;   /* optional manifest "version" (NULL when absent) */
     const char *args_json;
     int order;
     bool visible;

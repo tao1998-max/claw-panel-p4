@@ -60,6 +60,12 @@ bool ai_is_muted(void);
 bool ai_wake_word_enabled(void);
 void ai_set_wake_word_enabled(bool enabled);
 
+/* Exclusive local playback: pause the assistant AudioService (and wait for its
+ * tasks to exit) so the caller can reconfigure the shared ES8311/I2S. Resume
+ * restarts the service and restores wake-word/voice-processing state. */
+bool ai_audio_pause_for_exclusive(void);
+void ai_audio_resume_after_exclusive(void);
+
 #ifdef __cplusplus
 }
 #endif

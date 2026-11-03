@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Upload a validated App package to FAT or SD over the Web API."""
+"""Upload a validated App package to FAT or SD over the Web API.
+
+After uploading, `POST /api/apps/refresh` is called so the launcher picks the
+package up without a reboot (older firmware: use --restart).
+"""
 
 from __future__ import annotations
 
@@ -119,7 +123,9 @@ def main() -> int:
                         help="Deploy to FAT (/fatfs/claw/data/apps) or SD (/sdcard/apps)")
     parser.add_argument("--remote-id", help="Deployed id (default: launcher.json id)")
     parser.add_argument("--restart", action="store_true",
-                        help="POST /api/restart and wait for a new boot_id")
+                        help="Reboot the device instead of refreshing the app registry")
+    parser.add_argument("--no-refresh", action="store_true",
+                        help="Do not call POST /api/apps/refresh after uploading")
     parser.add_argument("--force", action="store_true",
                         help="Overwrite an existing app and allow a large package")
     parser.add_argument("--dry-run", action="store_true", help="Print the plan only")
@@ -160,6 +166,21 @@ def main() -> int:
             fail(f"package needs {human_bytes(need)} including reserve; "
                  f"only {human_bytes(free_bytes)} {args.volume.upper()} free (use --force)")
 
+    # Show the version transition (the home grid displays it).
+    local_version = ""
+    try:
+        local_manifest = json.loads((app_dir / "launcher.json").read_text(encoding="utf-8"))
+        local_version = str(local_manifest.get("version") or "")
+    except (OSError, ValueError):
+        pass
+    apps_http, apps_body, _ = http_json(host, "/api/apps", timeout=10)
+    if apps_http == 200 and isinstance(apps_body, dict):
+        for item in apps_body.get("items", []):
+            if item.get("id") == app_id:
+                remote_version = item.get("version") or "-"
+                print(f"version: {remote_version} -> {local_version or '-'}")
+                break
+
     target = f"{base_dir}/{app_id}"
     existing_http, _, _ = http_json(host, api + "?path=" + quote_query(target))
     if existing_http == 200 and not args.force and not args.dry_run:
@@ -187,8 +208,16 @@ def main() -> int:
             fail(f"restart failed: HTTP {status_http} {body[:200]!r}")
         if not wait_for_reboot(host, boot_id):
             fail("device did not report a new boot_id within 45s", 2)
-    else:
-        print("hint: POST /api/restart (or pass --restart) before the launcher shows the app")
+    elif not args.no_refresh:
+        # The launcher scans the app roots at boot; refresh rescans them in
+        # place so no reboot is needed. Older firmware returns 404 here.
+        status, body, raw = http_json(host, "/api/apps/refresh", "POST", {},
+                                      timeout=15)
+        if status == 200:
+            print("app registry refreshed (no reboot needed)")
+        else:
+            print("hint: this firmware has no /api/apps/refresh; "
+                  "POST /api/restart (or pass --restart) to rescan", file=sys.stderr)
     return 0
 
 

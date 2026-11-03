@@ -188,30 +188,103 @@ static void lua_image_init_borrowed_view(const lua_image_source_t *src, lua_imag
     strlcpy(out->source_format, src->source_format, sizeof(out->source_format));
 }
 
-static esp_err_t lua_image_decode_jpeg_to_rgb565le(const lua_image_source_t *src, lua_image_view_t *out)
+static esp_err_t lua_image_jpeg_read_header(const uint8_t *data, size_t bytes,
+                                            uint16_t *width, uint16_t *height)
 {
     jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
     jpeg_dec_handle_t decoder = NULL;
     jpeg_dec_io_t io = {0};
     jpeg_dec_header_info_t header = {0};
-    uint8_t *pixels = NULL;
-    size_t pixel_count = 0;
-    int out_len = 0;
     jpeg_error_t jpeg_err;
-    esp_err_t err;
 
+    if (data == NULL || width == NULL || height == NULL || bytes == 0 || bytes > INT_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
     config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
     jpeg_err = jpeg_dec_open(&config, &decoder);
-    if (jpeg_err != JPEG_ERR_OK) {
+    if (jpeg_err != JPEG_ERR_OK || decoder == NULL) {
         ESP_LOGE(TAG, "jpeg_dec_open failed: %d", jpeg_err);
         return ESP_FAIL;
     }
-    if (src->bytes > INT_MAX) {
-        ESP_LOGE(TAG, "JPEG input too large: %u bytes", (unsigned)src->bytes);
-        jpeg_dec_close(decoder);
-        return ESP_ERR_INVALID_SIZE;
+    io.inbuf = (uint8_t *)data;
+    io.inbuf_len = (int)bytes;
+    jpeg_err = jpeg_dec_parse_header(decoder, &io, &header);
+    jpeg_dec_close(decoder);
+    if (jpeg_err != JPEG_ERR_OK || header.width == 0 || header.height == 0) {
+        ESP_LOGE(TAG, "jpeg_dec_parse_header failed: %d", jpeg_err);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    *width = header.width;
+    *height = header.height;
+    return ESP_OK;
+}
+
+/* The decoder supports 1/2, 1/4 and 1/8 stages, and both scaled dimensions
+ * must stay multiples of 8. Pick the smallest stage whose output still fits
+ * the caller's bounds, otherwise decode at full size. */
+static int lua_image_jpeg_scale_divisor(int width, int height, int max_width, int max_height)
+{
+    int limit_w = max_width > 0 ? max_width : width;
+    int limit_h = max_height > 0 ? max_height : height;
+
+    if (max_width <= 0 && max_height <= 0) {
+        return 1;
+    }
+    for (int divisor = 1; divisor <= 8; divisor <<= 1) {
+        int scaled_w;
+        int scaled_h;
+
+        if (width % divisor != 0 || height % divisor != 0) {
+            continue;
+        }
+        scaled_w = width / divisor;
+        scaled_h = height / divisor;
+        if (scaled_w > limit_w || scaled_h > limit_h) {
+            continue;
+        }
+        if (divisor > 1 && (scaled_w % 8 != 0 || scaled_h % 8 != 0)) {
+            continue;
+        }
+        return divisor;
+    }
+    return 1;
+}
+
+/* Decode once with a fixed scale stage and rotation. Returns an owned view. */
+static esp_err_t lua_image_jpeg_decode_once(const lua_image_source_t *src, int src_width, int src_height,
+                                            int divisor, int rotate_cw, lua_image_view_t *out)
+{
+    jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
+    jpeg_dec_handle_t decoder = NULL;
+    jpeg_dec_io_t io = {0};
+    jpeg_dec_header_info_t header = {0};
+    int scaled_w = src_width / divisor;
+    int scaled_h = src_height / divisor;
+    int expect_w = scaled_w;
+    int expect_h = scaled_h;
+    uint8_t *pixels = NULL;
+    int out_len = 0;
+    jpeg_error_t jpeg_err;
+
+    config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
+    if (divisor > 1) {
+        config.scale.width = (uint16_t)scaled_w;
+        config.scale.height = (uint16_t)scaled_h;
+    }
+    if (rotate_cw != 0) {
+        config.rotate = (jpeg_rotate_t)(rotate_cw / 90);
+        if (rotate_cw == 90 || rotate_cw == 270) {
+            int tmp = expect_w;
+            expect_w = expect_h;
+            expect_h = tmp;
+        }
     }
 
+    jpeg_err = jpeg_dec_open(&config, &decoder);
+    if (jpeg_err != JPEG_ERR_OK || decoder == NULL) {
+        ESP_LOGE(TAG, "jpeg_dec_open failed: %d", jpeg_err);
+        return ESP_FAIL;
+    }
     io.inbuf = (uint8_t *)src->data;
     io.inbuf_len = (int)src->bytes;
     jpeg_err = jpeg_dec_parse_header(decoder, &io, &header);
@@ -220,23 +293,33 @@ static esp_err_t lua_image_decode_jpeg_to_rgb565le(const lua_image_source_t *src
         jpeg_dec_close(decoder);
         return ESP_ERR_INVALID_RESPONSE;
     }
-
-    err = lua_image_checked_pixel_count((int)header.width, (int)header.height, &pixel_count);
-    if (err != ESP_OK || header.height == 0 || header.width > (uint32_t)INT_MAX / 2 / header.height) {
-        ESP_LOGE(TAG, "JPEG header invalid size: %ux%u", (unsigned)header.width, (unsigned)header.height);
+    if ((int)header.width != expect_w || (int)header.height != expect_h) {
+        ESP_LOGW(TAG, "JPEG decoder returned %ux%u, expected %dx%d (scale=1/%d rot=%d)",
+                 (unsigned)header.width, (unsigned)header.height, expect_w, expect_h, divisor, rotate_cw);
+        expect_w = (int)header.width;
+        expect_h = (int)header.height;
+    }
+    if ((size_t)expect_w > SIZE_MAX / (size_t)expect_h / 2) {
         jpeg_dec_close(decoder);
         return ESP_ERR_INVALID_SIZE;
     }
+    jpeg_err = jpeg_dec_get_outbuf_len(decoder, &out_len);
+    if (jpeg_err != JPEG_ERR_OK || out_len <= 0 ||
+        (size_t)out_len != (size_t)expect_w * (size_t)expect_h * 2) {
+        ESP_LOGE(TAG, "unexpected JPEG output size: err=%d len=%d dims=%dx%d",
+                 jpeg_err, out_len, expect_w, expect_h);
+        jpeg_dec_close(decoder);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
 
-    out_len = (int)header.width * (int)header.height * 2;
     pixels = (uint8_t *)heap_caps_aligned_calloc(16, 1, (size_t)out_len, MALLOC_CAP_8BIT|MALLOC_CAP_SPIRAM);
     if (!pixels) {
         ESP_LOGE(TAG, "JPEG decode RGB565 buffer alloc failed: %u bytes", (unsigned)out_len);
         jpeg_dec_close(decoder);
         return ESP_ERR_NO_MEM;
     }
-
     io.outbuf = pixels;
+    io.out_size = out_len;
     jpeg_err = jpeg_dec_process(decoder, &io);
     jpeg_dec_close(decoder);
     if (jpeg_err != JPEG_ERR_OK) {
@@ -247,12 +330,66 @@ static esp_err_t lua_image_decode_jpeg_to_rgb565le(const lua_image_source_t *src
 
     out->data = pixels;
     out->bytes = (size_t)out_len;
-    out->width = (int)header.width;
-    out->height = (int)header.height;
+    out->width = expect_w;
+    out->height = expect_h;
     out->format = LUA_IMAGE_FORMAT_RGB565LE;
     out->owned = true;
     strlcpy(out->source_format, src->source_format, sizeof(out->source_format));
     return ESP_OK;
+}
+
+esp_err_t lua_image_jpeg_decode(const lua_image_source_t *src,
+                                const lua_image_jpeg_decode_opts_t *opts,
+                                lua_image_view_t *out)
+{
+    uint16_t width = 0;
+    uint16_t height = 0;
+    int rotate_cw = opts ? opts->rotate_cw : 0;
+    int max_width = opts ? opts->max_width : 0;
+    int max_height = opts ? opts->max_height : 0;
+    int divisor;
+    size_t pixel_count = 0;
+    esp_err_t err;
+
+    if (src == NULL || out == NULL || src->data == NULL || src->bytes == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out, 0, sizeof(*out));
+    if (rotate_cw != 0 && rotate_cw != 90 && rotate_cw != 180 && rotate_cw != 270) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    err = lua_image_jpeg_read_header(src->data, src->bytes, &width, &height);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = lua_image_checked_pixel_count((int)width, (int)height, &pixel_count);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (rotate_cw != 0 && ((width % 8) != 0 || (height % 8) != 0)) {
+        ESP_LOGW(TAG, "JPEG rotation needs 8-pixel aligned dimensions: %ux%u",
+                 (unsigned)width, (unsigned)height);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    divisor = lua_image_jpeg_scale_divisor((int)width, (int)height, max_width, max_height);
+    err = lua_image_jpeg_decode_once(src, (int)width, (int)height, divisor, rotate_cw, out);
+    if (err != ESP_OK && divisor > 1 && err != ESP_ERR_NO_MEM && err != ESP_ERR_INVALID_SIZE) {
+        /* Some JPEGs cannot use the scaled path; retry at full resolution. */
+        ESP_LOGW(TAG, "JPEG scaled decode failed (%s), retrying full size", esp_err_to_name(err));
+        memset(out, 0, sizeof(*out));
+        err = lua_image_jpeg_decode_once(src, (int)width, (int)height, 1, rotate_cw, out);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "JPEG decode failed: %s (%ux%u scale=1/%d rot=%d)",
+                 esp_err_to_name(err), (unsigned)width, (unsigned)height, divisor, rotate_cw);
+    }
+    return err;
+}
+
+static esp_err_t lua_image_decode_jpeg_to_rgb565le(const lua_image_source_t *src, lua_image_view_t *out)
+{
+    return lua_image_jpeg_decode(src, NULL, out);
 }
 
 static esp_err_t lua_image_require_rgb565le(const lua_image_source_t *src, lua_image_view_t *out)
@@ -633,6 +770,7 @@ static bool lua_image_jpeg_source_type(lua_image_format_t format, jpeg_pixel_for
 }
 
 static esp_err_t lua_image_encode_to_jpeg(const lua_image_view_t *source, jpeg_pixel_format_t source_type,
+                                          size_t input_bpp, int quality, jpeg_subsampling_t subsampling,
                                           lua_image_view_t *out)
 {
     jpeg_enc_config_t config = DEFAULT_JPEG_ENC_CONFIG();
@@ -650,13 +788,17 @@ static esp_err_t lua_image_encode_to_jpeg(const lua_image_view_t *source, jpeg_p
     if (err != ESP_OK) {
         return err;
     }
-    ESP_RETURN_ON_ERROR(lua_image_checked_data_bytes(pixel_count, 2, &input_size), TAG, "JPEG encode input size check failed");
-    out_capacity = input_size / 2;
+    ESP_RETURN_ON_ERROR(lua_image_checked_data_bytes(pixel_count, input_bpp, &input_size), TAG, "JPEG encode input size check failed");
+    /* 4:4:4 at quality 100 can approach the raw byte size, so leave 50 % headroom. */
+    if (input_size > (size_t)INT_MAX / 3 * 2) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    out_capacity = input_size + input_size / 2;
     if (out_capacity < LUA_IMAGE_MIN_JPEG_BUFFER_SIZE) {
         out_capacity = LUA_IMAGE_MIN_JPEG_BUFFER_SIZE;
     }
-    if (source->bytes < input_size || input_size > INT_MAX || out_capacity > INT_MAX) {
-        ESP_LOGE(TAG, "JPEG encode invalid size: input=%u output_capacity=%u", (unsigned)input_size, (unsigned)out_capacity);
+    if (source->bytes < input_size) {
+        ESP_LOGE(TAG, "JPEG encode input too small: %u < %u", (unsigned)source->bytes, (unsigned)input_size);
         return ESP_ERR_INVALID_SIZE;
     }
 
@@ -682,8 +824,8 @@ static esp_err_t lua_image_encode_to_jpeg(const lua_image_view_t *source, jpeg_p
     config.width = source->width;
     config.height = source->height;
     config.src_type = source_type;
-    config.subsampling = JPEG_SUBSAMPLE_422;
-    config.quality = LUA_IMAGE_JPEG_QUALITY;
+    config.subsampling = subsampling;
+    config.quality = (uint8_t)quality;
     jpeg_err = jpeg_enc_open(&config, &encoder);
     if (jpeg_err != JPEG_ERR_OK) {
         ESP_LOGE(TAG, "jpeg_enc_open failed: %d", jpeg_err);
@@ -696,7 +838,8 @@ static esp_err_t lua_image_encode_to_jpeg(const lua_image_view_t *source, jpeg_p
     jpeg_enc_close(encoder);
     free(aligned_input);
     if (jpeg_err != JPEG_ERR_OK || out_len <= 0) {
-        ESP_LOGE(TAG, "jpeg_enc_process failed: err=%d out_len=%d", jpeg_err, out_len);
+        ESP_LOGE(TAG, "jpeg_enc_process failed: err=%d out_len=%d quality=%d subsample=%d",
+                 jpeg_err, out_len, quality, (int)subsampling);
         free(jpeg);
         return ESP_FAIL;
     }
@@ -711,29 +854,71 @@ static esp_err_t lua_image_encode_to_jpeg(const lua_image_view_t *source, jpeg_p
     return ESP_OK;
 }
 
+esp_err_t lua_image_encode_jpeg(const lua_image_view_t *source, int quality,
+                                jpeg_subsampling_t subsampling, lua_image_view_t *out)
+{
+    lua_image_view_t converted = {0};
+    const lua_image_view_t *view = source;
+    jpeg_pixel_format_t source_type = JPEG_PIXEL_FORMAT_RGB565_LE;
+    size_t input_bpp = 2;
+    esp_err_t err;
+
+    if (source == NULL || out == NULL || source->data == NULL ||
+        source->width <= 0 || source->height <= 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out, 0, sizeof(*out));
+    if (quality < 1) {
+        quality = 1;
+    } else if (quality > 100) {
+        quality = 100;
+    }
+
+    if (source->format == LUA_IMAGE_FORMAT_GRAY8) {
+        source_type = JPEG_PIXEL_FORMAT_GRAY;
+        input_bpp = 1;
+        subsampling = JPEG_SUBSAMPLE_GRAY;
+    } else if (lua_image_jpeg_source_type(source->format, &source_type)) {
+        input_bpp = 2;
+    } else {
+        lua_image_source_t src = {
+            .data = source->data,
+            .bytes = source->bytes,
+            .width = source->width,
+            .height = source->height,
+            .format = source->format,
+        };
+        strlcpy(src.source_format, source->source_format, sizeof(src.source_format));
+        err = lua_image_require_rgb565le(&src, &converted);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "JPEG encode source RGB565 conversion failed: %s", esp_err_to_name(err));
+            return err;
+        }
+        view = &converted;
+        source_type = JPEG_PIXEL_FORMAT_RGB565_LE;
+        input_bpp = 2;
+    }
+    err = lua_image_encode_to_jpeg(view, source_type, input_bpp, quality, subsampling, out);
+    lua_image_release_view(&converted);
+    return err;
+}
+
 static esp_err_t lua_image_require_jpeg(const lua_image_source_t *src, lua_image_view_t *out)
 {
-    lua_image_view_t source = {0};
-    jpeg_pixel_format_t source_type = JPEG_PIXEL_FORMAT_RGB565_LE;
-    esp_err_t err;
+    lua_image_view_t view = {0};
 
     if (src->format == LUA_IMAGE_FORMAT_JPEG || src->format == LUA_IMAGE_FORMAT_MJPEG) {
         lua_image_init_borrowed_view(src, out, LUA_IMAGE_FORMAT_JPEG);
         return ESP_OK;
     }
-
-    if (lua_image_jpeg_source_type(src->format, &source_type)) {
-        lua_image_init_borrowed_view(src, &source, src->format);
-    } else {
-        err = lua_image_require_rgb565le(src, &source);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "JPEG encode source RGB565 conversion failed: %s", esp_err_to_name(err));
-            return err;
-        }
-    }
-    err = lua_image_encode_to_jpeg(&source, source_type, out);
-    lua_image_release_view(&source);
-    return err;
+    view.data = src->data;
+    view.bytes = src->bytes;
+    view.width = src->width;
+    view.height = src->height;
+    view.format = src->format;
+    view.owned = false;
+    strlcpy(view.source_format, src->source_format, sizeof(view.source_format));
+    return lua_image_encode_jpeg(&view, LUA_IMAGE_JPEG_QUALITY, JPEG_SUBSAMPLE_422, out);
 }
 
 esp_err_t lua_image_convert_view(const lua_image_source_t *src, lua_image_format_t format, lua_image_view_t *out)

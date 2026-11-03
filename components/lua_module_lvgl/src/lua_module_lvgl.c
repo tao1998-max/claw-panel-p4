@@ -32,6 +32,9 @@ int luaopen_lvgl(lua_State *L)
     lua_lvgl_register_funcs(L, lua_lvgl_extra_widget_funcs);
     lua_lvgl_register_funcs(L, lua_lvgl_complex_widget_funcs);
     lua_lvgl_register_funcs(L, lua_lvgl_eaf_module_funcs);
+    lua_lvgl_register_funcs(L, lua_lvgl_lottie_module_funcs);
+    lua_lvgl_register_funcs(L, lua_lvgl_animimg_module_funcs);
+    lua_lvgl_register_funcs(L, lua_lvgl_gif_module_funcs);
     lua_lvgl_register_funcs(L, lua_lvgl_event_module_funcs);
     lua_lvgl_register_funcs(L, lua_lvgl_demo_module_funcs);
     lua_lvgl_register_funcs(L, lua_lvgl_font_module_funcs);
@@ -63,4 +66,9 @@ esp_err_t lua_module_lvgl_register_with_data_root(const char *data_root)
         return err;
     }
     return cap_lua_register_exit_cleanup(lua_lvgl_exit_cleanup);
+}
+
+esp_err_t lua_module_lvgl_set_sd_root(const char *sd_root)
+{
+    return lua_lvgl_set_sd_root(sd_root);
 }

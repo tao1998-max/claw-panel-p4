@@ -78,6 +78,8 @@ esp_err_t http_server_register_sd_assets_routes(httpd_handle_t server);
 esp_err_t http_server_register_files_routes(httpd_handle_t server);
 #if CONFIG_APP_CLAW_LUA_MODULE_HTTP_SERVER
 esp_err_t http_server_register_lua_app_routes(httpd_handle_t server);
+esp_err_t http_server_register_lua_failure_routes(httpd_handle_t server);
+esp_err_t http_server_register_app_routes(httpd_handle_t server);
 #endif
 esp_err_t http_server_register_wechat_routes(httpd_handle_t server);
 esp_err_t http_server_register_webim_routes(httpd_handle_t server);
@@ -86,6 +88,8 @@ esp_err_t http_server_captive_404_handler(httpd_req_t *req, httpd_err_code_t err
 
 esp_err_t http_server_register_webim_session_routes(httpd_handle_t server);
 esp_err_t http_server_register_schedule_routes(httpd_handle_t server);
+esp_err_t http_server_register_tts_routes(httpd_handle_t server);
+esp_err_t http_server_register_c6_ota_routes(httpd_handle_t server);
 esp_err_t http_server_webim_send_session(httpd_req_t *req);
 esp_err_t http_server_webim_error(httpd_req_t *req, esp_err_t err);
 

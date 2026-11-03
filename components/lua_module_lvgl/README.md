@@ -165,6 +165,9 @@ Basic widgets:
 - `lvgl.tileview(parent, opts)`
 - `lvgl.window(parent, opts)`
 - `lvgl.eaf(parent, { src = "<your/path/anim.eaf>", loop_count = -1, loop_enabled = true })`
+- `lvgl.lottie(parent, { src = "<your/path/anim.json>", w = 200, h = 200, autoplay = true })`
+- `lvgl.animimg(parent, { src = {"<path0.png>", "<path1.png>"}, duration = 900, repeat_count = -1 })`
+- `lvgl.gif(parent, { src = "<your/path/anim.gif>", color_format = "rgb565" })`
 
 Lua index convention:
 - dropdown/roller selected indexes are 1-based
@@ -197,6 +200,9 @@ Widget-specific `opts`:
 - `spinbox`: `min`, `max`, `value`, `step`, `digit_count`, `dec_point_pos`, `rollover`
 - `tabview`: `tab_bar_position`, `tab_bar_size`
 - `eaf`: `src`, `src_data`, `loop_count`, `loop_enabled`, `frame_delay`
+- `lottie`: `src`, `src_data`, `w`, `h`, `autoplay`
+- `animimg`: `src` (array of LVGL FS paths), `duration`, `repeat_count`, `autoplay`
+- `gif`: `src`, `color_format`, `loop_count`, `auto_pause`
 
 ## Common Options
 
@@ -207,7 +213,8 @@ Most widgets support:
 - Numeric values: `min`, `max`, `value`
 - Style: `bg_color`, `text_color`, `border_color`, `bg_opa`, `opa`,
   `radius`, `border_width`, `pad`, `pad_row`, `pad_column`,
-  `line_color`, `line_width`, `arc_width`, `font`
+  `line_color`, `line_width`, `arc_width`, `font` (`text_font` is accepted
+  as an alias; the value is a font object or a built-in font name string)
 
 Colors can be strings or numbers:
 
@@ -233,6 +240,12 @@ label:set_style({ font = font })
 - `font:set_size(px)` -> true
 - `font:is_valid()` -> boolean
 - `font:delete()` -> true
+
+Built-in LVGL fonts can also be referenced by name string without `font_load`:
+`montserrat_14` (default), `montserrat_20`, `montserrat_24`, `montserrat_32`
+and `montserrat_48` (ASCII only; no CJK glyphs). For example:
+`label:set_style({ font = "montserrat_32" })`. The LVGL property name
+`text_font` is accepted as an alias of `font`.
 
 Without `path`, `lvgl.font_load()` uses `fonts/NotoSansSC-Regular-sub.ttf`. Passing `nil` to `lvgl.set_default_font()` restores the built-in font. An explicit `font` style on a control overrides the default font.
 
@@ -267,6 +280,98 @@ Methods:
 
 Use either `src` or `src_data` when creating an EAF object.
 
+## Lottie Animation
+
+Lottie playback uses LVGL's `lv_lottie` widget with the bundled ThorVG software renderer. The widget renders into an ARGB8888 buffer sized `w` x `h`.
+
+```lua
+local anim = lvgl.lottie(scr, {
+    src = app_dir .. "/assets/loading.json",  -- or src_data = json_string
+    w = 200,
+    h = 200,
+    align = "center",
+    autoplay = true,
+})
+
+if anim:is_loaded() then
+    anim:pause()
+    anim:resume()
+    anim:restart()
+end
+```
+
+Methods:
+- `anim:set_src(path)` -> boolean (true if the source parsed)
+- `anim:set_src_data(json_string)` -> boolean
+- `anim:pause()`, `anim:resume()`, `anim:restart()`
+- `anim:is_loaded()` -> boolean
+- `anim:is_playing()` -> boolean
+- `anim:get_duration()` -> single-cycle duration in ms
+- `anim:get_total_frames()` -> frame count
+- `anim:get_time()` -> elapsed ms in the current cycle
+
+Notes:
+- `src` is read with `fopen` inside ThorVG, so pass a VFS path (`/sdcard/...`, `/fatfs/...`); LVGL's `D:` drive prefix is not used.
+- The animation loops forever. Finite loop counts are not exposed because LVGL frees a completed animation while `lv_lottie` keeps a pointer to it.
+- Rendering is software (ThorVG): each animation occupies `w * h * 4` bytes of PSRAM and large sizes cost CPU per frame.
+- ThorVG needs roughly 22 KB of stack per rendered frame; this template raises the LVGL and Lua task stacks to 32 KB.
+- Requires firmware built with `LV_USE_LOTTIE` and ThorVG (`LV_USE_THORVG_INTERNAL`); otherwise `lvgl.lottie` raises `not enabled in firmware`.
+
+## Image Sequences And GIF
+
+`lvgl.animimg` cycles through an array of still images; `lvgl.gif` plays an
+animated GIF. Both read sources through LVGL's file system:
+
+- `D:/<path>` resolves to the Claw data root, typically `/fatfs/claw/data`
+- `S:/<path>` resolves to the SD card mount point, typically `/sdcard`
+  (available when a card is mounted)
+
+```lua
+local frames = lvgl.animimg(scr, {
+    src = {"D:/apps/demo/assets/f0.png",
+           "D:/apps/demo/assets/f1.png",
+           "D:/apps/demo/assets/f2.png"},
+    duration = 900,        -- total cycle duration in ms
+    repeat_count = -1,     -- -1 infinite, 0 play once, n repeat n times
+    autoplay = true,
+})
+
+local gif = lvgl.gif(scr, {
+    src = "D:/apps/demo/assets/anim.gif",
+    color_format = "rgb565",  -- default argb8888
+    auto_pause = true,
+})
+```
+
+`animimg` methods:
+- `anim:set_src(frames)` -> true (replaces the sequence and starts it)
+- `anim:start()`, `anim:stop()`
+- `anim:set_duration(ms)`, `anim:get_duration()`
+- `anim:set_repeat_count(n)`, `anim:get_repeat_count()` -> -1 for infinite
+- `anim:get_src_count()` -> integer
+
+`gif` methods:
+- `gif:set_src(path)` -> boolean (true if the file opened)
+- `gif:restart()`, `gif:pause()`, `gif:resume()`
+- `gif:is_loaded()`
+- `gif:set_loop_count(n)`, `gif:get_loop_count()`
+- `gif:get_frame_count()`, `gif:get_current_frame()`
+- `gif:set_auto_pause(boolean)`
+- `gif:get_size()` -> `w, h` or nil
+
+Notes:
+- PNG, JPEG and GIF decoders are enabled in this firmware. Raw LVGL `.bin`
+  images also work; `animimg` sources can mix formats.
+- `repeat_count` follows LVGL semantics: `-1` repeats forever, `0` plays once,
+  `n > 0` repeats `n` times after the first pass. `set_duration` and
+  `set_repeat_count` affect the next `start()`.
+- `animimg` keeps its source array and strings alive in C; Lua values may be
+  released after construction.
+- `gif` `color_format` accepts `argb8888`, `rgb565`, `rgb888`, or `xrgb8888`.
+  `rgb565` roughly halves the frame buffer memory.
+- Sources are looked up through the module's `D:` (FAT) or `S:` (SD) drive.
+  For example, an SD library asset is `S:/panel-assets/<id>/f0.png`.
+
 ## Common Methods
 
 All LVGL object userdata supports:
@@ -285,6 +390,8 @@ All LVGL object userdata supports:
 - `obj:set_scroll(opts)`
 - `obj:on(event, callback)` -> handle
 - `obj:off([handle_or_event])` -> removed_count
+- `obj:set_property(name_or_id, value[, selector])` -> boolean
+- `obj:get_property(name_or_id)` -> value or nil
 - `obj:delete()`
 - `obj:clean()`
 
@@ -304,6 +411,34 @@ Common `align` names:
 - `obj:move_foreground()` -> true. Moves the object above its siblings; screens have no parent and raise an error.
 
 Use `PRESS_LOCK` on hold controls to keep receiving release events when a finger leaves the control. Clear `CLICKABLE` on decorative widgets so they do not intercept touches. `HIDDEN` disables drawing and hit testing without deleting the object. These methods raise errors for unsupported flags or invalid/deleted handles.
+
+## Generic Property Access
+
+`set_property` / `get_property` expose LVGL's `LV_USE_OBJ_PROPERTY` API directly, so any property LVGL implements for a widget can be read or written without a dedicated Lua method. Names are resolved with `lv_obj_property_get_id()`, which searches the widget class hierarchy first and style properties second.
+
+```lua
+local label = lvgl.label(scr, { text = "before" })
+
+label:set_property("text", "after")
+local text = label:get_property("text")            -- "after"
+
+-- Read back what the user typed into a textarea
+local value = textarea:get_property("text")
+
+-- Style properties work by name too
+label:set_property("text_color", "#ff0000")
+local color = label:get_property("text_color")     -- 0xff0000
+```
+
+- `set_property` returns `true` when LVGL accepted the value, `false` for read-only properties.
+- `get_property` returns `nil` when the property exists but has no getter.
+- Values are converted from the type embedded in the property ID: integer, boolean, precise number, color (`0xRRGGBB` or `"#RRGGBB"`), point (`{x=..., y=...}` or `{x, y}`), string, `lvgl` object, or font.
+- `selector` is an optional `lv_part_t | lv_state_t` value for style properties; it defaults to `LV_PART_MAIN | LV_STATE_DEFAULT` (0).
+- Paired properties such as `slider.value` accept the first value alone or a `{first, second}` table. Paired values are limited to int/bool types; pointer/text pairs are rejected.
+- Geometry getters (`x`, `y`, `w`, `h`) return the last laid-out coordinates. Make the screen active and let the LVGL task run a frame before relying on them, otherwise they may return stale values.
+- Unknown names raise an error.
+- Requires firmware built with `CONFIG_LV_USE_OBJ_PROPERTY=y`; name lookup additionally needs `CONFIG_LV_USE_OBJ_PROPERTY_NAME=y`. Otherwise both methods raise `not enabled in firmware`.
+- Coverage follows LVGL's property tables (`src/widgets/property/`); properties returning raw pointers (image source, display, font) are not converted and `get_property` returns `nil`.
 
 ## Layout And Scrolling
 
@@ -376,6 +511,7 @@ Basic methods:
 - `bar/slider/arc/scale/spinbox:set_range(min, max)`
 - `screen:load()`
 - `image:set_raw_rgb565(width, height, data[, opts])` -> true
+- `image:set_frame(frame)` -> true (zero-copy handoff from an `image.frame`)
 - `image:set_raw_argb8888(width, height, data)` -> true
 - `image:set_pivot(x, y)` -> true
 - `image:set_rotation(angle)` -> true
@@ -447,6 +583,18 @@ Basic methods:
 - `tileview:set_tile(tile[, anim])`
 - `tileview:set_tile_by_index(col, row[, anim])`
 - `tileview:get_active_tile()` -> tile or nil
+- `lottie:set_src(path)` -> boolean
+- `lottie:set_src_data(data)` -> boolean
+- `lottie:restart()`, `lottie:pause()`, `lottie:resume()`
+- `lottie:is_loaded()`, `lottie:is_playing()`
+- `lottie:get_duration()`, `lottie:get_total_frames()`, `lottie:get_time()`
+- `animimg:set_src(frames)`, `animimg:start()`, `animimg:stop()`
+- `animimg:set_duration(ms)`, `animimg:get_duration()`
+- `animimg:set_repeat_count(n)`, `animimg:get_repeat_count()`, `animimg:get_src_count()`
+- `gif:set_src(path)`, `gif:restart()`, `gif:pause()`, `gif:resume()`
+- `gif:is_loaded()`, `gif:get_size()`
+- `gif:set_loop_count(n)`, `gif:get_loop_count()`, `gif:get_frame_count()`, `gif:get_current_frame()`
+- `gif:set_auto_pause(bool)`
 - `window:add_title(text)` -> label
 - `window:add_button([icon[, width]])` -> button
 - `window:get_header()` -> object
@@ -474,6 +622,11 @@ Basic methods:
 
 ## Raw Images And Dynamic Lines
 
+`image:set_frame(frame)` is a product extension: it takes an `image.frame`
+from the `image` module, converts it to RGB565 once and points the widget at
+that buffer without copying. The image store stays referenced until the object
+is replaced or deleted. The widget size should match the frame size; use
+`frame:info()` to read it.
 Raw image setters accept tightly packed pixel strings. RGB565 uses little-endian bytes by default; `{swapped=true}` accepts big-endian RGB565. ARGB8888 uses B, G, R, A byte order. The string length must equal `width * height * bytes_per_pixel`. Dimensions must be positive integers; height is limited to 65535 pixels, and maximum width depends on pixel format and firmware. Oversized images raise an error.
 
 Uploads replace the previous source. Argument, allocation, or unsupported-format errors leave the previous image intact. Lua strings and image frames may be released immediately after upload.
@@ -499,8 +652,8 @@ Line construction and `set_points()` accept 2–1024 point tables; omitted coord
 - Encoder and keypad input are not available.
 - Some widgets and demos depend on LVGL `LV_USE_*` build flags; disabled entries raise a Lua error such as `not enabled in firmware`.
 - `lvgl.font_load(...)` requires LVGL `tiny_ttf` support.
-- Image decoders and general filesystem setup are not wrapped.
-- Constructor `src` and `imagebutton:set_src(...)` pass string sources to LVGL; loading them depends on firmware FS/decoder setup. `image` raw setters bypass file decoding.
+- LVGL file sources use `D:` (Claw data root, `/fatfs/claw/data`) and, when a card is mounted, `S:` (SD mount point, e.g. `/sdcard`). PNG, JPEG and GIF decoders are enabled; other filesystems are not exposed to LVGL.
+- Constructor `src` and `imagebutton:set_src(...)` accept `D:/...` or `S:/...` LVGL FS paths; PNG/JPEG are decoded by the firmware. Raw pixel decoding still goes through the `image` module.
 - Canvas supports background fill, pixel read/write, and RGB565 pixel uploads. Advanced drawing layers are not available.
 - Chart cursors and other advanced chart APIs are not wrapped.
 - Span and chart series handles support only their documented methods, not general widget methods such as `set_pos`.

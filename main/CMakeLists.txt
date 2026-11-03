@@ -25,6 +25,7 @@ idf_component_register(
         "ai/ai_system_info.c"
         "ai/ai_ui.cc"
         "audio/lua_module_audio.c"
+        "audio/lua_audio_mp3.c"
         "ai/vendor/nvs_settings.cc"
         "ai/vendor/protocols/protocol.cc"
         "ai/vendor/protocols/websocket_protocol.cc"
@@ -42,6 +43,7 @@ idf_component_register(
         "web/web_ui.c"
         "ui/ui.c"
         "ui/ui_widgets.c"
+        "ui/app_icon.c"
         "ui/lvgl_mem_psram.c"
         "ui/ui_shell.c"
         "ui/pages/page_home.c"
@@ -88,6 +90,7 @@ idf_component_register(
         efuse
         json
         espressif__esp_codec_dev
+        espressif__esp_new_jpeg
         espressif__esp_audio_codec
         espressif__esp_audio_effects
         espressif__esp-dsp
@@ -96,11 +99,14 @@ idf_component_register(
         lwip
         nvs_flash
         claw_port
+        claw_hw_registry
         cap_scheduler
         app_registry
         app_config
         cap_im_platform
         http_server
+        esp_http_client
+        mbedtls
 )
 
 # 两点说明：

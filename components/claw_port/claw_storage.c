@@ -28,9 +28,9 @@ static const char *TAG = "claw_storage";
 /* The suffix is part of the marker so toggling the optional hardware-module
  * Kconfig re-runs the seed pass and restores/removes their docs. */
 #if CONFIG_TEMPLATE_CLAW_LUA_UNUSED_HW_MODULES
-#define CLAW_SEED_VERSION    "28-hw"
+#define CLAW_SEED_VERSION    "45-hw"
 #else
-#define CLAW_SEED_VERSION    "28"
+#define CLAW_SEED_VERSION    "45"
 #endif
 
 #define CLAW_DATA_DIR   CLAW_STORAGE_DATA_DIR
@@ -223,6 +223,8 @@ static void seed_workspace(void)
      * devices that still carry them. */
     remove_tree(CLAW_SYSTEM_DIR "/skills/panel_demo");
     remove_tree(CLAW_SYSTEM_DIR "/skills/snake_demo");
+    /* This board has no controllable light; drop the generic light switch. */
+    remove_tree(CLAW_SYSTEM_DIR "/skills/light_switch");
     remove_tree(CLAW_DATA_DIR "/skills/snake_demo");
     remove_tree(CLAW_DATA_DIR "/skills/tictactoe");
     remove_tree(CLAW_DATA_DIR "/skills/hello_app");
@@ -284,8 +286,8 @@ static void seed_workspace(void)
                    cap_llm_inspect_image_SKILL_md_start,
                    cap_llm_inspect_image_SKILL_md_length, true);
 
-    /* Official workflow/authoring skills (light_switch, plan_mode, app_creator,
-     * skills_lab, skill_creator, lua_package_authoring). */
+    /* Official workflow/authoring skills (plan_mode, app_creator, skills_lab,
+     * skill_creator, lua_package_authoring). */
     claw_skill_seed_write();
 
     FILE *m = fopen(CLAW_SEED_MARKER, "w");

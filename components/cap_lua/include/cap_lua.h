@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "claw_core.h"
 #include "claw_hw_registry.h"
@@ -64,6 +65,20 @@ typedef struct {
     char path[CAP_LUA_JOB_PATH_MAX];
     cap_lua_job_status_t status;
 } cap_lua_job_snapshot_t;
+
+/* Recent failed/timed-out jobs, used by the Web debug API. Stopped jobs are
+ * intentionally excluded: a debugger or the test endpoint stops Apps too. */
+typedef struct {
+    char job_id[CAP_LUA_JOB_ID_LEN];
+    char name[CAP_LUA_JOB_NAME_MAX];
+    char path[CAP_LUA_JOB_PATH_MAX];
+    cap_lua_job_status_t status;
+    char error[192];
+    time_t finished_at;
+} cap_lua_failure_t;
+
+/** Copy recent failures, newest first. Returns the number written. */
+size_t cap_lua_get_recent_failures(cap_lua_failure_t *out, size_t max);
 
 esp_err_t cap_lua_register_group(void);
 esp_err_t cap_lua_add_package_path_dir(const char *dir);

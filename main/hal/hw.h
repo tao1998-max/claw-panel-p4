@@ -13,6 +13,7 @@
  * ========================================================================== */
 
 /* ---------- 本工程直接使用的引脚 ---------- */
+/* RS485: UART1 由 Lua `uart` 模块按需占用（EN 自动），这里只保留板级接线。 */
 #define PIN_RS485_TX        26
 #define PIN_RS485_RX        27
 
@@ -75,6 +76,7 @@ esp_err_t hw_audio_init(void);
 esp_err_t hw_storage_init(void);
 esp_err_t hw_rs485_init(void);
 esp_err_t hw_eth_init(void);
+bool hw_eth_has_ip(void);
 esp_err_t hw_camera_init(void);
 esp_err_t hw_wifi_init(void);
 esp_err_t hw_rtc_init(void);

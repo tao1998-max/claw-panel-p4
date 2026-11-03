@@ -15,12 +15,19 @@ Supported modes are `"input"`, `"output"`, `"input_output"`, `"output_od"`, `"in
 
 A pin cannot be used while another device or script owns it. Call `gpio.close(pin)` to release it; otherwise it remains in use until the job exits. Garbage collection alone does not release pins. Retry a failed close before reusing the pin.
 
-The example uses GPIO4. Check that it is available and output-capable on your board.
+## Board resources (this panel)
+
+Only pins registered in the ESP-Claw hardware registry can be claimed. This
+firmware registers UART1's pins **GPIO26 / GPIO27** for the RS485 port; they
+can be used as plain GPIO only while the UART is closed. Other pins raise
+`resource not found` until the board registers them at boot.
+
+The example uses GPIO26 because it is registered on this panel.
 
 ## Example
 ```lua
 local gpio = require("gpio")
-gpio.set_direction(4, "output")
-gpio.set_level(4, 1)
-gpio.close(4)
+gpio.set_direction(26, "output")
+gpio.set_level(26, 1)
+gpio.close(26)
 ```

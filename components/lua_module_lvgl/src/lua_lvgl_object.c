@@ -69,6 +69,18 @@ void lua_lvgl_record_release_resources(lua_lvgl_obj_record_t *record)
         record->string_array = NULL;
         record->string_array_count = 0;
     }
+    if (record->type == LUA_LVGL_OBJ_IMAGE && record->frame_dsc) lv_image_cache_drop(record->frame_dsc);
+    free(record->frame_dsc);
+    record->frame_dsc = NULL;
+    if (record->frame_release && record->frame_token) {
+        record->frame_release(record->frame_token);
+    }
+    record->frame_token = NULL;
+    record->frame_release = NULL;
+    if (record->draw_buf) {
+        lv_draw_buf_destroy(record->draw_buf);
+        record->draw_buf = NULL;
+    }
     if (record->type == LUA_LVGL_OBJ_IMAGE && record->data2) lv_image_cache_drop(record->data2);
     free(record->data);
     record->data = NULL;

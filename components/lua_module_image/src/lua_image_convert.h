@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "esp_jpeg_common.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -65,6 +66,41 @@ typedef struct {
  * - Borrowed views are valid only while the source image buffer remains valid.
  */
 esp_err_t lua_image_convert_view(const lua_image_source_t *src, lua_image_format_t format, lua_image_view_t *out);
+
+/**
+ * @brief Optional decode-time manipulation for JPEG sources.
+ *
+ * Scaling uses the decoder's 1/2..1/8 stages. It is best effort: when the
+ * source dimensions do not allow an exact scaled stage both max values are
+ * ignored and the image is decoded at full size. Rotation is clockwise and
+ * requires source dimensions to be multiples of 8.
+ */
+typedef struct {
+    int max_width;    ///< Upper bound for the decoded width (0 = no limit)
+    int max_height;   ///< Upper bound for the decoded height (0 = no limit)
+    int rotate_cw;    ///< Clockwise rotation: 0, 90, 180 or 270
+} lua_image_jpeg_decode_opts_t;
+
+/**
+ * @brief Decode a JPEG buffer into an owned RGB565LE view.
+ *
+ * The returned view always owns its buffer and must be released with
+ * lua_image_release_view(). Returns ESP_ERR_NOT_SUPPORTED when a requested
+ * rotation cannot be performed by the decoder (dimensions not multiples of 8);
+ * callers can then fall back to a full decode plus PPA rotation.
+ */
+esp_err_t lua_image_jpeg_decode(const lua_image_source_t *src,
+                                const lua_image_jpeg_decode_opts_t *opts,
+                                lua_image_view_t *out);
+
+/**
+ * @brief Encode a view into an owned JPEG view.
+ *
+ * Direct encoder inputs (RGB565LE/BE, YUYV, UYVY, GRAY8) are encoded without
+ * an intermediate copy; other formats are converted to RGB565 first.
+ */
+esp_err_t lua_image_encode_jpeg(const lua_image_view_t *source, int quality,
+                                jpeg_subsampling_t subsampling, lua_image_view_t *out);
 
 /**
  * @brief Release an lua_image_view_t returned by conversion helpers.

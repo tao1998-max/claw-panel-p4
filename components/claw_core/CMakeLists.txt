@@ -33,6 +33,7 @@ idf_component_register(
         json
     PRIV_REQUIRES
         claw_event_router
+        esp_timer
 )
 
 set(CLAW_GIT_VERSION "unknown")

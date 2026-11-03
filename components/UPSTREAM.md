@@ -71,14 +71,18 @@ Components and skills added after the first drop (now present under
   `lua_module_environmental_sensor`. The product audio binding lives in
   `main/audio/lua_module_audio.c`. `lua_module_camera` is source-only and not
   built; `lua_module_fuel_gauge` is an empty CMake shell.
-- Official skills: `light_switch`, `plan_mode`, `app_creator`,
-  `skills_lab_search/downloader`, `skill_creator`, `lua_package_authoring`,
-  plus a static `board_hardware_info` skill for this board.
+- Official skills: `plan_mode`, `app_creator`, `skills_lab_search/downloader`,
+  `skill_creator`, `lua_package_authoring`, plus a static
+  `board_hardware_info` skill for this board. Upstream `light_switch` is not
+  seeded by this product (the seeder removes old copies from previous seeds).
 - Official Web UI: `components/http_server` (prebuilt frontend + APIs) with
   product wiring in `main/web` and `components/app_config`.
 
 Still absent or replaced:
 
+- Upstream per-component `components/*/skills/` trees were removed. The product
+  keeps only the seeded `components/claw_port/seed/skills/` (runtime) and the
+  host-side `skills/panel-app-design/` package.
 - `application/edge_agent`, `common/app_claw` -> product `claw_port` and
   `claw_agent_mgr`/`claw_core` wiring.
 - `audio_hub`, `audio_playback` -> XiaoZhi `AudioService` +
@@ -158,11 +162,36 @@ Local patches versus upstream:
     the LVGL subset fonts remain for static i18n text.
 15. `cap_boards` is an empty generator shell because the board manager is
     excluded. A static `board_hardware_info` skill is seeded instead so the
-    official `light_switch` / `plan_mode` / `skills_lab` skills have a real
-    device inventory to consult.
+    official `plan_mode` / `skills_lab` / `app_creator` skills have a real
+    device inventory to consult. `light_switch` is removed by the seeder.
 16. The board has no button/knob/LED strip/SCI/environmental sensor. Those
     Lua modules are opt-in via
     `CONFIG_TEMPLATE_CLAW_LUA_UNUSED_HW_MODULES` (default `n`); their seeded
     docs are removed when the option is off.
+17. The C6 co-processor was upgraded from the vendor `JC-C6-slave_v2.3.2`
+    (ESP-Hosted 2.3.x) to **ESP-Hosted 2.11.7**, matching the host component.
+    The slave image is built from the managed component's `slave` project and
+    transferred over SDIO by `POST /api/c6-ota`
+    (`components/http_server/http_server_c6_ota_api.c`); no C6 UART is needed
+    for maintenance. The C6 UART remains the recovery path.
+18. `main/hal/hw_rtc.c` stores UTC in the RX8025T instead of local time
+    (`rtc_tm_to_utc_epoch` on read, `gmtime_r` on write). A one-time NVS flag
+    `hw_rtc/utc` migrates boards whose RTC still contains the old local-time
+    value, fixing the 8-hour clock offset before SNTP.
+19. IM gateways start only after Wi-Fi or Ethernet obtains an IP:
+    `app_start()` creates `im_start_task`, which waits for a non-empty Wi-Fi
+    IP or `hw_eth_has_ip()`, then applies the persisted IM config. This avoids
+    boot-time DNS/token failures from QQ/Feishu/Telegram.
+20. `components/claw_port/claw_tts.c` uses a **128 KB** PCM stream buffer
+    (flow control/backpressure) instead of 2 MB. The 2 MB variant dumped a
+    whole reply into PSRAM and caused a one-frame display flash. TTS worker
+    and player stacks are allocated in PSRAM with `xTaskCreateWithCaps()`.
+21. Display uses two full-screen DPI framebuffers + avoid-tearing in
+    Direct mode; the BSP's duplicate `bsp_display_brightness_init()` call was
+    removed. `CONFIG_SPI_FLASH_SUPPORT_BOYA_CHIP=y` enables the board's Boya
+    flash driver.
+22. Network bring-up (Wi-Fi/C6 and Ethernet) runs in a background
+    `net_init` task after the UI is created; the ETH PHY reset no longer
+    blocks app startup.
 
 `Lua` itself is the managed `espressif/lua` component (pinned `^5.5.1`).

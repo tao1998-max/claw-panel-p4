@@ -42,12 +42,6 @@ menu "P4 Template"
 
     endif
 
-    config TEMPLATE_RS485_ECHO
-        bool "RS485 回环测试"
-        default y
-        help
-            打开后 UART1(26/27) 收到的数据原样回发，可用于验证 RS485 收发器。
-
     config TEMPLATE_UI_SELFTEST
         bool "界面自检：每 2 秒自动切页"
         default n

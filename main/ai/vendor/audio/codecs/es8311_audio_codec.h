@@ -18,8 +18,13 @@ private:
     const audio_codec_gpio_if_t* gpio_if_ = nullptr;
 
     esp_codec_dev_handle_t dev_ = nullptr;
+    esp_codec_dev_handle_t exclusive_dev_ = nullptr;
     gpio_num_t pa_pin_ = GPIO_NUM_NC;
     bool pa_inverted_ = false;
+    int base_input_rate_ = 16000;
+    int base_output_rate_ = 16000;
+    int base_input_channels_ = 1;
+    int base_output_channels_ = 1;
     std::mutex data_if_mutex_;
 
     void CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din);
@@ -37,6 +42,14 @@ public:
     virtual void SetOutputVolume(int volume) override;
     virtual void EnableInput(bool enable) override;
     virtual void EnableOutput(bool enable) override;
+
+    /* Exclusive output used by local MP3 playback: the caller must first stop
+     * the AudioService tasks. Opens an output-only codec device at the native
+     * MP3 rate (I2S and ES8311 are reconfigured), then EndExclusiveOutput()
+     * restores the 16 kHz duplex format. */
+    bool BeginExclusiveOutput(int sample_rate, int channels);
+    int ExclusiveWrite(const int16_t *data, int frames);
+    void EndExclusiveOutput();
 };
 
 #endif // _ES8311_AUDIO_CODEC_H

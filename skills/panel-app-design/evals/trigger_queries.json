@@ -29,6 +29,10 @@
       "should_trigger": true
     },
     {
+      "query": "改动中文文案后，应用里新加的字变成方框了",
+      "should_trigger": true
+    },
+    {
       "query": "改 ESP32-P4 的显示驱动或分区表",
       "should_trigger": false
     },
@@ -66,6 +70,14 @@
     },
     {
       "query": "App 通过 TCP 连我的内网服务器收发数据，界面不能卡",
+      "should_trigger": true
+    },
+    {
+      "query": "面板 App 通过板载 RS485 串口读 Modbus 传感器的数据并显示",
+      "should_trigger": true
+    },
+    {
+      "query": "做一个带输入框和软键盘的面板 App，界面用 flex 排布",
       "should_trigger": true
     }
   ]

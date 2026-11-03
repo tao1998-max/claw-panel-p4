@@ -17,6 +17,10 @@ def main() -> int:
                         help="Exit non-zero unless /sdcard is mounted")
     parser.add_argument("--json", action="store_true", help="Emit JSON")
     parser.add_argument("--timeout", type=int, default=8, help="HTTP timeout seconds")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
     args = parser.parse_args()
 
     status, app_status, _ = http_json(args.host, "/api/status", timeout=args.timeout)
@@ -66,6 +70,15 @@ def main() -> int:
                            for name in ("net", "mqtt", "websocket")}
     result["lua_network_modules"] = network_modules
 
+    # Recent Lua job failures (App debugging: ask the user to launch the App,
+    # then read the exact error here instead of the serial console).
+    failures = None
+    fail_http, fail_body, _ = http_json(args.host, "/api/lua-failures?limit=3",
+                                        timeout=args.timeout)
+    if fail_http == 200 and isinstance(fail_body, dict):
+        failures = fail_body.get("items", [])
+    result["lua_failures"] = failures
+
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
@@ -86,6 +99,16 @@ def main() -> int:
             print(f"Lua net modules: {state}")
         else:
             print("Lua net modules: /api/lua-modules unavailable (old firmware)")
+        if failures is None:
+            print("Lua failures: /api/lua-failures unavailable (old firmware)")
+        elif not failures:
+            print("Lua failures: none")
+        else:
+            print(f"Lua failures: {len(failures)}")
+            for failure in failures:
+                print(f"  - {failure.get('name', '?')} "
+                      f"[{failure.get('status', '?')}] {failure.get('path', '')}")
+                print(f"    {failure.get('error', '')}")
 
     if args.require_sd and not sd.get("mounted"):
         print("error: SD card is not mounted", file=sys.stderr)

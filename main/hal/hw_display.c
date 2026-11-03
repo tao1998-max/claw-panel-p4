@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "hw.h"
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
@@ -19,16 +20,23 @@ esp_err_t hw_display_init(void)
     bsp_display_cfg_t cfg = {
         .lvgl_port_cfg = {
             .task_priority = 4,
-            .task_stack = 16384,   /* 全屏 Aurora 背景图绘制比纯渐变占栈 */
+            /* ThorVG's Lottie software rasterizer needs ~22 KB of stack per
+             * rendered frame; keep the stack in PSRAM so internal RAM stays
+             * available for Wi-Fi/audio. */
+            .task_stack = 32 * 1024,
+            .task_stack_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
             .task_affinity = -1,
             .task_max_sleep_ms = 500,
             .timer_period_ms = 5,
         },
+        /* avoid-tearing 模式下 BSP 会忽略这里的尺寸，改用两块全屏 DPI
+         * framebuffer（1024×600×2 ×2 ≈ 2.4MB PSRAM）作为 LVGL draw buffer。
+         * 保留 60 行配置，便于关闭 avoid-tearing 时回退到部分刷新。 */
         .buffer_size = BSP_LCD_H_RES * 60,
         .double_buffer = 1,
         .flags = {
             .buff_dma = false,
-            .buff_spiram = true,     /* 缓冲放 PSRAM，省内部 RAM */
+            .buff_spiram = true,     /* 回退路径：缓冲放 PSRAM，省内部 RAM */
             .sw_rotate = false,      /* 面板原生横向，无需软件旋转 */
         },
     };
@@ -59,7 +67,8 @@ esp_err_t hw_display_init(void)
         snprintf(t->detail, sizeof(t->detail), "not found");
     }
 
-    ESP_LOGI(TAG, "display + touch ready, brightness=%d%%", s_brightness);
+    ESP_LOGI(TAG, "display + touch ready, brightness=%d%% (dual DPI FB, direct mode)",
+             s_brightness);
     return ESP_OK;
 }
 

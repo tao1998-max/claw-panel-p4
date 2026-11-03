@@ -21,11 +21,11 @@ Edit `launcher.json` `args`:
 
 ```bash
 python scripts/upload_app.py --host http://<device-ip> \
-  --app-dir assets/examples/mqtt_panel --volume sd --force --restart
+  --app-dir assets/examples/mqtt_panel --volume sd --force
 ```
 
-Then tap the "MQTT Panel" card. The device must be able to reach the broker
-(same LAN or internet). No card at boot means the App is not listed.
+Then tap the "MQTT Panel" card (the upload script already refreshed the app
+list). The device must be able to reach the broker (same LAN or internet).
 
 ## Try it
 

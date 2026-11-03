@@ -8,6 +8,7 @@ idf_component_register(
         "claw_task_registry.c"
         "claw_api.c"
         "claw_agent.c"
+        "claw_tts.c"
         "claw_settings.c"
     INCLUDE_DIRS
         "include"
@@ -76,6 +77,10 @@ idf_component_register(
         freertos
         esp_timer
         json
+        esp_websocket_client
+        esp-tls
+        mbedtls
+        nvs_flash
     EMBED_TXTFILES
         "seed/router_rules.json"
         "seed/arg_schema.lua"
@@ -89,14 +94,12 @@ idf_component_register(
         "seed/cap_http_request_SKILL.md"
         "seed/cap_web_search_SKILL.md"
         "seed/cap_llm_inspect_image_SKILL.md"
-        "seed/skills/light_switch_SKILL.md"
-        "seed/skills/light_switch_gpio_light_switch.lua"
-        "seed/skills/light_switch_led_strip_switch.lua"
         "seed/skills/board_hardware_info_SKILL.md"
         "seed/skills/plan_mode_SKILL.md"
         "seed/skills/app_creator_SKILL.md"
         "seed/skills/app_creator_app_package_spec.md"
         "seed/skills/app_creator_resolve_apps_root.lua"
+        "seed/skills/app_creator_scaffold_app.lua"
         "seed/skills/skills_lab_search_SKILL.md"
         "seed/skills/skills_lab_downloader_SKILL.md"
         "seed/skills/skills_lab_downloader_download_package.lua"
@@ -116,6 +119,7 @@ idf_component_register(
         "seed/skills/builtin_lua_modules_docs_lua_module_audio.md"
         "seed/skills/builtin_lua_modules_docs_lua_module_button.md"
         "seed/skills/builtin_lua_modules_docs_lua_module_call_capability.md"
+        "seed/skills/builtin_lua_modules_docs_lua_module_claw.md"
         "seed/skills/builtin_lua_modules_docs_lua_module_delay.md"
         "seed/skills/builtin_lua_modules_docs_lua_module_display.md"
         "seed/skills/builtin_lua_modules_docs_lua_module_environmental_sensor.md"

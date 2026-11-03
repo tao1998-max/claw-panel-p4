@@ -12,6 +12,7 @@
  */
 #include "claw_agent.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,7 @@
 #include "claw_api.h"
 #include "claw_panel.h"
 #include "claw_settings.h"
+#include "claw_tts.h"
 #include "claw_storage.h"
 #include "claw_tasks.h"
 
@@ -40,6 +42,7 @@
 #include "claw_cap.h"
 #include "claw_core.h"
 #include "claw_memory.h"
+#include "claw_session_mgr.h"
 #include "claw_skill.h"
 
 /*
@@ -67,7 +70,7 @@ static const char *TAG = "claw_agent";
 #define AGENT_WORKER_STACK      8192
 #define AGENT_WORKER_PRIORITY   3
 #define AGENT_CORE_STACK        (16 * 1024)
-#define AGENT_CORE_TIMEOUT_MS   60000
+#define AGENT_CORE_TIMEOUT_MS   180000
 #define AGENT_CORE_MAX_TOKENS   3072
 /* Upstream CONFIG_APP_CLAW_MAX_TOOL_ITERATIONS defaults to 64; a launcher App
  * needs resolve + spec + authoring + read-back + publish in one turn. */
@@ -606,6 +609,226 @@ static esp_err_t agent_init_resources(const claw_agent_settings_t *cfg)
     return ESP_OK;
 }
 
+#define AGENT_STREAM_TEXT_MAX     4096
+#define AGENT_STREAM_SENTENCE_MAX 512
+#define AGENT_STREAM_FLUSH_BYTES  200
+#define AGENT_STREAM_MIN_SENTENCE 32
+
+static SemaphoreHandle_t s_stream_lock;
+static char s_stream_text[AGENT_STREAM_TEXT_MAX];
+static size_t s_stream_text_len;
+static char s_stream_sentence[AGENT_STREAM_SENTENCE_MAX];
+static size_t s_stream_sentence_len;
+static char s_stream_session[CLAW_SESSION_MGR_ID_SIZE];
+static uint32_t s_stream_rev;
+static bool s_stream_active;
+static bool s_stream_tts_used;
+static bool s_tts_stream_open;
+
+static bool agent_stream_sentence_end(const char *buffer, size_t len)
+{
+    if (len == 0) {
+        return false;
+    }
+    unsigned char c = (unsigned char)buffer[len - 1];
+    if (c == '\n' || c == '.' || c == '!' || c == '?' || c == ';') {
+        return true;
+    }
+    if (len >= 3) {
+        unsigned char a = (unsigned char)buffer[len - 3];
+        unsigned char b = (unsigned char)buffer[len - 2];
+        if (a == 0xE3 && b == 0x80 && c == 0x82) {          /* 。 */
+            return true;
+        }
+        if (a == 0xEF && b == 0xBC &&
+            (c == 0x81 || c == 0x9F || c == 0x9B)) {        /* ！？； */
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Called with s_stream_lock held. */
+static void agent_stream_flush_sentence_locked(void)
+{
+    if (s_stream_sentence_len == 0) {
+        return;
+    }
+    if (s_stream_sentence_len <= 3) {
+        bool speakable = false;
+        for (size_t i = 0; i < s_stream_sentence_len; i++) {
+            if (isalnum((unsigned char)s_stream_sentence[i])) {
+                speakable = true;
+                break;
+            }
+        }
+        if (!speakable) {
+            s_stream_sentence_len = 0;
+            return;
+        }
+    }
+    s_stream_sentence[s_stream_sentence_len] = '\0';
+    if (!s_tts_stream_open) {
+        if (claw_tts_stream_begin() == ESP_OK) {
+            s_tts_stream_open = true;
+        }
+    }
+    if (s_tts_stream_open) {
+        if (claw_tts_stream_feed(s_stream_sentence) == ESP_OK) {
+            s_stream_tts_used = true;
+        } else if (claw_tts_speak_async(s_stream_sentence) == ESP_OK) {
+            s_stream_tts_used = true;
+        }
+    } else if (claw_tts_speak_async(s_stream_sentence) == ESP_OK) {
+        /* Another TTS owns the lock; fall back to the async sentence queue. */
+        s_stream_tts_used = true;
+    }
+    s_stream_sentence_len = 0;
+}
+
+static void agent_stream_begin(const char *session_id, void *user_ctx)
+{
+    (void)user_ctx;
+    if (s_stream_lock == NULL ||
+        xSemaphoreTake(s_stream_lock, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+    s_stream_text_len = 0;
+    s_stream_sentence_len = 0;
+    s_stream_text[0] = '\0';
+    s_stream_sentence[0] = '\0';
+    strlcpy(s_stream_session, session_id != NULL ? session_id : "",
+            sizeof(s_stream_session));
+    s_stream_active = true;
+    s_stream_tts_used = false;
+    s_tts_stream_open = false;
+    s_stream_rev++;
+    xSemaphoreGive(s_stream_lock);
+}
+
+static void agent_stream_delta(const char *text, size_t len, void *user_ctx)
+{
+    (void)user_ctx;
+    if (s_stream_lock == NULL || text == NULL || len == 0 ||
+        xSemaphoreTake(s_stream_lock, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+    for (size_t i = 0; i < len; i++) {
+        char c = text[i];
+        if (s_stream_text_len < sizeof(s_stream_text) - 1) {
+            s_stream_text[s_stream_text_len++] = c;
+            s_stream_text[s_stream_text_len] = '\0';
+        }
+        if (s_stream_sentence_len >= sizeof(s_stream_sentence) - 1) {
+            agent_stream_flush_sentence_locked();
+        }
+        s_stream_sentence[s_stream_sentence_len++] = c;
+        bool ended = agent_stream_sentence_end(s_stream_sentence,
+                                               s_stream_sentence_len);
+        if ((ended && s_stream_sentence_len >= AGENT_STREAM_MIN_SENTENCE) ||
+            s_stream_sentence_len >= AGENT_STREAM_FLUSH_BYTES) {
+            agent_stream_flush_sentence_locked();
+        }
+    }
+    s_stream_rev++;
+    xSemaphoreGive(s_stream_lock);
+}
+
+static void agent_stream_end(void *user_ctx)
+{
+    (void)user_ctx;
+    if (s_stream_lock == NULL ||
+        xSemaphoreTake(s_stream_lock, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+    agent_stream_flush_sentence_locked();
+    if (s_tts_stream_open) {
+        (void)claw_tts_stream_end();
+        s_tts_stream_open = false;
+    }
+    s_stream_rev++;
+    xSemaphoreGive(s_stream_lock);
+}
+
+esp_err_t claw_agent_stream_snapshot(const char *session_id, char *out,
+                                     size_t out_size, uint32_t *out_rev,
+                                     bool *out_active)
+{
+    if (out == NULL || out_size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    out[0] = '\0';
+    if (out_rev != NULL) {
+        *out_rev = 0;
+    }
+    if (out_active != NULL) {
+        *out_active = false;
+    }
+    if (s_stream_lock == NULL ||
+        xSemaphoreTake(s_stream_lock, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (session_id != NULL && session_id[0] != '\0' &&
+        strcmp(session_id, s_stream_session) == 0) {
+        strlcpy(out, s_stream_text, out_size);
+        if (out_rev != NULL) {
+            *out_rev = s_stream_rev;
+        }
+        if (out_active != NULL) {
+            *out_active = s_stream_active;
+        }
+    }
+    xSemaphoreGive(s_stream_lock);
+    return ESP_OK;
+}
+
+#if CONFIG_TEMPLATE_CLAW_AGENT_MEMORY
+static esp_err_t persist_context_with_tts(const claw_core_context_persist_batch_t *batch,
+                                          void *user_ctx)
+{
+    esp_err_t err = claw_memory_persist_context_callback(batch, user_ctx);
+    if (err != ESP_OK || batch == NULL || batch->request == NULL ||
+        !claw_tts_auto_speak_enabled()) {
+        return err;
+    }
+    const char *channel = batch->request->source_channel;
+    if (channel != NULL && strcmp(channel, "xiaozhi") == 0) {
+        /* XiaoZhi speaks the returned text itself; avoid double audio. */
+        return err;
+    }
+    const char *cap = batch->request->source_cap;
+    if (cap != NULL && strcmp(cap, "cap_agent_mgr") == 0) {
+        /* Subagent completion notes are not user-facing replies. */
+        return err;
+    }
+
+    bool streamed = false;
+    if (s_stream_lock != NULL &&
+        xSemaphoreTake(s_stream_lock, portMAX_DELAY) == pdTRUE) {
+        streamed = s_stream_tts_used;
+        s_stream_tts_used = false;
+        s_stream_active = false;
+        s_stream_rev++;
+        xSemaphoreGive(s_stream_lock);
+    }
+    if (streamed) {
+        /* Sentences were already queued while the LLM streamed. */
+        return err;
+    }
+
+    for (size_t i = 0; i < batch->record_count; i++) {
+        if (batch->records[i].type == CLAW_CORE_CONTEXT_RECORD_ASSISTANT_FINAL &&
+            batch->records[i].text != NULL && batch->records[i].text[0] != 0) {
+            ESP_LOGI(TAG, "auto-speak agent reply (%u chars)",
+                     (unsigned)strlen(batch->records[i].text));
+            (void)claw_tts_speak_async(batch->records[i].text);
+            break;
+        }
+    }
+    return err;
+}
+#endif
+
 static void agent_fill_core_config(const claw_agent_settings_t *cfg,
                                    claw_core_config_t *out_config)
 {
@@ -636,12 +859,15 @@ static void agent_fill_core_config(const claw_agent_settings_t *cfg,
         .image_remote_url_only = cfg->image_remote_url_only,
         .system_prompt = AGENT_SYSTEM_PROMPT,
 #if CONFIG_TEMPLATE_CLAW_AGENT_MEMORY
-        .persist_context = claw_memory_persist_context_callback,
+        .persist_context = persist_context_with_tts,
         .request_gate = claw_memory_request_gate_callback,
         .on_request_start = claw_memory_request_start_callback,
         .collect_stage_note = claw_memory_stage_note_callback,
 #endif
         .call_cap = claw_cap_call_from_core,
+        .text_delta_begin = agent_stream_begin,
+        .text_delta = agent_stream_delta,
+        .text_delta_end = agent_stream_end,
         .task_stack_size = AGENT_CORE_STACK,
         .task_priority = AGENT_WORKER_PRIORITY,
         .task_core = tskNO_AFFINITY,
@@ -806,7 +1032,8 @@ esp_err_t claw_agent_init(void)
     }
     s_lock = xSemaphoreCreateMutex();
     s_state_lock = xSemaphoreCreateMutex();
-    if (s_lock == NULL || s_state_lock == NULL) {
+    s_stream_lock = xSemaphoreCreateMutex();
+    if (s_lock == NULL || s_state_lock == NULL || s_stream_lock == NULL) {
         return ESP_ERR_NO_MEM;
     }
 
@@ -1376,6 +1603,18 @@ bool claw_agent_is_ready(void)
 bool claw_agent_is_busy(void)
 {
     return false;
+}
+
+esp_err_t claw_agent_stream_snapshot(const char *session_id, char *out,
+                                     size_t out_size, uint32_t *out_rev,
+                                     bool *out_active)
+{
+    (void)session_id;
+    (void)out;
+    (void)out_size;
+    (void)out_rev;
+    (void)out_active;
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 esp_err_t claw_agent_status_json(char *out, size_t out_size)

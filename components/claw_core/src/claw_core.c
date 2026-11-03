@@ -107,6 +107,10 @@ esp_err_t claw_core_create(const claw_core_config_t *config, claw_core_handle_t 
     core->collect_stage_note_user_ctx = config->collect_stage_note_user_ctx;
     core->call_cap = config->call_cap;
     core->cap_user_ctx = config->cap_user_ctx;
+    core->text_delta_begin = config->text_delta_begin;
+    core->text_delta = config->text_delta;
+    core->text_delta_end = config->text_delta_end;
+    core->text_delta_user_ctx = config->text_delta_user_ctx;
 
     request_queue_len = config->request_queue_len ? config->request_queue_len : CLAW_CORE_DEFAULT_REQUEST_Q;
     response_queue_len = config->response_queue_len ? config->response_queue_len : CLAW_CORE_DEFAULT_RESPONSE_Q;

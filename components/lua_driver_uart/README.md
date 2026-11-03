@@ -2,6 +2,24 @@
 
 This module describes how to open a UART port and read/write bytes or text lines from Lua. Scripts call `read` / `read_line` with a timeout and get back whatever is available.
 
+## Board wiring (this panel)
+
+The on-board RS485 transceiver is wired to UART1: **TX = GPIO26, RX = GPIO27,
+115200 8N1**. DE/RE direction is handled by the transceiver hardware, so the
+bus is used as a plain UART:
+
+```lua
+local uart = require("uart")
+local u = uart.new(1, 26, 27, 115200)
+u:write("...")
+local data = u:read(64, 500)
+u:close()
+```
+
+The firmware probes the port at boot, registers `uart_bus:1`, `gpio:26` and
+`gpio:27` in the ESP-Claw hardware registry, and releases it again so scripts
+own the port while it is open.
+
 ## How to call
 - Import it with `local uart = require("uart")`
 - Open a port with `local u = uart.new(port, tx, rx, baud [, opts])`

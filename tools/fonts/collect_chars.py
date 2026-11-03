@@ -19,7 +19,8 @@ OUT = Path(__file__).resolve().parent / "charset.txt"
 
 # 除了汉字，再补几个界面里会用到的全角/特殊符号
 # • 是密码输入框的掩码字符（lv_textarea 密码模式）
-EXTRA = "·—…%℃•"
+# 我 是 Claw 聊天里用户头像的字形（page_claw.c 中的字面量）
+EXTRA = "·—…%℃•我"
 
 STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)

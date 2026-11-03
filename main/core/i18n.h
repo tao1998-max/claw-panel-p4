@@ -180,33 +180,20 @@ typedef enum {
 
     /* ESP-Claw 自动化 */
     STR_NAV_CLAW,           /* 底栏：Claw */
-    STR_CLAW_TITLE,         /* 页面标题 */
-    STR_CLAW_TAB_TASKS,     /* 任务 */
-    STR_CLAW_TAB_SCRIPTS,   /* 脚本 */
     STR_CLAW_TAB_SETTINGS,  /* 设置 */
     STR_CLAW_LUA_AI,        /* 允许小智运行 Lua */
     STR_CLAW_LUA_AI_HINT,   /* 说明 */
     STR_CLAW_ENABLE_CONFIRM,/* 开启确认 */
-    STR_CLAW_STORAGE,       /* 工作区空间 */
-    STR_CLAW_NO_TASKS,      /* 暂无任务 */
-    STR_CLAW_NO_SCRIPTS,    /* 暂无脚本 */
     STR_CLAW_RUN,           /* 运行 */
-    STR_CLAW_STOP,          /* 停止 */
     STR_CLAW_JOBS,          /* 运行中 */
     STR_CLAW_CLOUD_ON,      /* 小智 Lua：开 */
     STR_CLAW_CLOUD_OFF,     /* 小智 Lua：关 */
     STR_CLAW_REFRESH,       /* 刷新 */
-    STR_CLAW_SKILLS,        /* 技能模板 */
     STR_CLAW_DELETE,        /* 删除 */
-    STR_CLAW_NEW_SCRIPT,    /* 新建脚本 */
     STR_CLAW_DELETE_CONFIRM,/* 确认删除？ */
-    STR_CLAW_SCRIPT_NAME,   /* 脚本名 */
-    STR_CLAW_SCRIPT_NAME_HINT, /* 英文/数字，自动补 .lua */
 
     /* Claw 定时任务 */
-    STR_CLAW_TAB_SCHEDULES,     /* 定时 */
     STR_CLAW_NO_SCHEDULES,      /* 暂无定时任务 */
-    STR_CLAW_SCHEDULE_TEST,     /* 测试定时 */
     STR_CLAW_SCHEDULE_TRIGGER,  /* 触发 */
     STR_CLAW_SCHEDULE_ENABLE,   /* 启用 */
     STR_CLAW_SCHEDULE_DISABLE,  /* 停用 */
@@ -214,37 +201,19 @@ typedef enum {
     STR_CLAW_SCHEDULE_INTERVAL, /* 间隔 */
     STR_CLAW_SCHEDULE_CRON,     /* Cron */
     STR_CLAW_SCHEDULE_NEXT,     /* 下次 */
-    STR_CLAW_SCHEDULE_CREATED,  /* 已创建 5 秒后执行 */
-    STR_CLAW_SCHEDULE_FAILED,   /* 创建定时失败 */
     STR_CLAW_SCHEDULE_DONE,     /* 已完成 */
     STR_CLAW_SCHEDULE_DUE,      /* 即将触发 */
 
     /* Claw 管理页（参考 ESP-Claw Web UI 的侧栏/表格布局） */
-    STR_CLAW_MANAGE,            /* 管理 */
     STR_CLAW_NAV_FILES,         /* 文件 */
-    STR_CLAW_NAV_CAPS,          /* 能力 */
-    STR_CLAW_DESC_TASKS,
-    STR_CLAW_DESC_FILES,
-    STR_CLAW_DESC_CAPS,
     STR_CLAW_DESC_SCHEDULES,
     STR_CLAW_DESC_AGENT,
     STR_CLAW_DESC_SETTINGS,
-    STR_CLAW_FILE_NAME,
-    STR_CLAW_FILE_TYPE,
-    STR_CLAW_FILE_SIZE,
-    STR_CLAW_FILE_ACTIONS,
-    STR_CLAW_FILE_SCRIPT,
-    STR_CLAW_FILE_SKILL,
-    STR_CLAW_CAP_GROUP,
-    STR_CLAW_CAP_STATE,
-    STR_CLAW_CAP_TOOLS,
-    STR_CLAW_CAP_NONE,
     STR_CLAW_FILES_FAT,         /* 内部存储 */
     STR_CLAW_FILES_SD,          /* SD 卡 */
     STR_CLAW_SD_NOT_MOUNTED,    /* SD 卡未检测到 */
 
     /* 本地 Agent */
-    STR_CLAW_TAB_AGENT,         /* Agent */
     STR_CLAW_AGENT_OFF,         /* Agent 关 */
     STR_CLAW_AGENT_ON,          /* Agent 已开启（未发过请求） */
     STR_CLAW_AGENT_UNCONFIGURED,/* Agent 未配置 */
@@ -255,7 +224,6 @@ typedef enum {
     STR_CLAW_AGENT_DISABLED_HINT,
     STR_CLAW_AGENT_GO_SETTINGS, /* 去设置 */
     STR_CLAW_AGENT_SETTINGS,    /* Agent 设置 */
-    STR_CLAW_AGENT_MEM_OFF,     /* 会话记忆默认关闭 */
     STR_CLAW_AGENT_ENABLE_CONFIRM,
     STR_CLAW_AGENT_BACKEND,     /* 接口类型 */
     STR_CLAW_AGENT_URL,         /* 接口地址 */
@@ -265,51 +233,48 @@ typedef enum {
     STR_CLAW_AGENT_KEY_SET,
     STR_CLAW_AGENT_KEY_NONE,
     STR_CLAW_AGENT_NEED_CONFIG,
-    STR_CLAW_AGENT_LAST_REPLY,  /* 最近回复 */
-    STR_CLAW_AGENT_NO_REPLY,
     STR_CLAW_AGENT_ASK,         /* 向小爪提问 */
     STR_CLAW_AGENT_SEND,        /* 发送 */
     STR_CLAW_AGENT_KBD_HINT,
-    STR_CLAW_AGENT_THINKING,
-    STR_CLAW_AGENT_ERROR,       /* 上次错误 */
-    STR_CLAW_AGENT_VOICE_HINT,
 
     /* Claw 管理页：对齐 ESP-Claw Web UI 的栏目与内容 */
-    STR_CLAW_NAV_STATUS,        /* 系统状态 */
     STR_CLAW_NAV_MEMORY,        /* 记忆管理 */
     STR_CLAW_NAV_CHAT,          /* 在线聊天 */
-    STR_CLAW_NAV_LUA,           /* Lua 模块管理 */
-    STR_CLAW_DESC_STATUS,
-    STR_CLAW_DESC_MEMORY,
-    STR_CLAW_DESC_LUA,
-    STR_CLAW_SEC_BASIC,         /* 基本设置 */
-    STR_CLAW_SEC_LLM,           /* LLM 设置 */
-    STR_CLAW_SEC_IM,            /* IM 设置 */
-    STR_CLAW_SEC_NET,           /* 网络和搜索设置 */
-    STR_CLAW_SEC_STATUS_NET,    /* 网络 */
-    STR_CLAW_SEC_STATUS_STORE,  /* 存储 */
     STR_CLAW_SEC_STATUS_RUN,    /* 运行状态 */
-    STR_CLAW_WIFI_STATUS,
-    STR_CLAW_IP,
-    STR_CLAW_SSID,
-    STR_CLAW_MODE,
     STR_CLAW_WORKSPACE,
-    STR_CLAW_FREE,
-    STR_CLAW_AGENT_STATE,
-    STR_CLAW_MODULES,
-    STR_CLAW_CAPS_COUNT,
-    STR_CLAW_CONFIGURED,
-    STR_CLAW_NOT_CONFIGURED,
-    STR_CLAW_SEARCH_PROVIDER,
-    STR_CLAW_SEARCH_ALLOWLIST,
     STR_CLAW_MEMORY_LONG,
     STR_CLAW_MEMORY_SOUL,
     STR_CLAW_MEMORY_IDENTITY,
     STR_CLAW_MEMORY_USER,
-    STR_CLAW_MEMORY_EMPTY,
-    STR_CLAW_VIEW,
     STR_CLAW_WEB_HINT,
     STR_CLAW_UP,
+
+    /* Claw 四页签重构新增 */
+    STR_CLAW_TAB_AUTOMATION,    /* 自动化 */
+    STR_CLAW_DESC_WORKSPACE,    /* 记忆与文件 */
+    STR_CLAW_CLAW_UNAVAILABLE,  /* Claw 不可用 */
+    STR_CLAW_FILE_TOO_LARGE,    /* 文件太大，仅显示前 64 KB */
+    STR_CLAW_FILE_OPEN_FAILED,  /* 打开文件失败 */
+    STR_CLAW_FILES_EMPTY,       /* 暂无文件 */
+    STR_CLAW_ACTION_TRIGGERED,  /* 已触发 */
+    STR_CLAW_ACTION_ENABLED,    /* 已启用 */
+    STR_CLAW_ACTION_DISABLED,   /* 已停用 */
+    STR_CLAW_ACTION_DELETED,    /* 已删除 */
+    STR_CLAW_ACTION_FAILED,     /* 操作失败 */
+    STR_CLAW_SCHEDULE_CREATE_HINT,
+    STR_CLAW_SCHEDULE_LIMIT,    /* 显示 */
+    STR_CLAW_CHAT_SESSION_UNAVAILABLE,
+    STR_CLAW_CHAT_SESSION_FAILED,
+    STR_CLAW_NO_MESSAGES,       /* 暂无消息 */
+    STR_CLAW_SESSION_PICKER,    /* 会话 */
+    STR_CLAW_NEW_SESSION,       /* 新建会话 */
+    STR_CLAW_NO_SESSIONS,       /* 暂无会话 */
+    STR_CLAW_AGENT_STATUS_UNAVAILABLE,
+    STR_CLAW_TTS_TITLE,          /* 豆包语音 */
+    STR_CLAW_TTS_HINT,           /* API Key 与 AppID+Token 二选一 */
+    STR_CLAW_TTS_RESOURCE,       /* 资源 ID */
+    STR_CLAW_TTS_SPEAKER,        /* 音色 */
+    STR_CLAW_TTS_AUTO_SPEAK,     /* 自动播报 */
 
     STR_NAV_APPS,               /* 底栏：应用 */
     STR_APPS_TITLE,             /* 应用页标题 */

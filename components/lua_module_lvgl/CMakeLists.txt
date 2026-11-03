@@ -1,7 +1,9 @@
 idf_component_register(
     SRCS
         "src/lua_module_lvgl.c"
+        "src/lua_lvgl_animimg.c"
         "src/lua_lvgl_core_widgets.c"
+        "src/lua_lvgl_gif.c"
         "src/lua_lvgl_image.c"
         "src/lua_lvgl_line.c"
         "src/lua_lvgl_complex_widgets.c"
@@ -11,9 +13,11 @@ idf_component_register(
         "src/lua_lvgl_font.c"
         "src/lua_lvgl_extra_widgets.c"
         "src/lua_lvgl_layout.c"
+        "src/lua_lvgl_lottie.c"
         "src/lua_lvgl_methods.c"
         "src/lua_lvgl_object.c"
         "src/lua_lvgl_parse.c"
+        "src/lua_lvgl_property.c"
         "src/lua_lvgl_runtime.c"
         "src/lua_lvgl_style.c"
         "src/lua_lvgl_value.c"
@@ -23,6 +27,7 @@ idf_component_register(
         cap_lua
         claw_core
         display_service
+        lua_module_image
         esp_lcd
         esp_timer
         lvgl

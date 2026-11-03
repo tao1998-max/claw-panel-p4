@@ -37,6 +37,14 @@ void ai_audio_input_close(void);
 bool ai_audio_playback_idle(void);
 void ai_audio_stop_playback(void);
 
+/* Exclusive native-rate output for local MP3 playback. Pauses the assistant
+ * AudioService, reconfigures ES8311/I2S to sample_rate (16-bit stereo PCM),
+ * writes interleaved frames directly, then restores 16 kHz and resumes the
+ * assistant on ai_audio_exclusive_end(). Fails when the assistant is busy. */
+bool ai_audio_exclusive_begin(int sample_rate, int channels);
+bool ai_audio_exclusive_write(const int16_t *stereo_pcm, int frames);
+void ai_audio_exclusive_end(void);
+
 #ifdef __cplusplus
 }
 #endif

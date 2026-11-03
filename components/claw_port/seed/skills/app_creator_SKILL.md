@@ -23,9 +23,22 @@ This workflow manages runtime Apps under the writable DATA root. It does not edi
 This product has no screenshot or image-inspection path:
 
 - `claw.screenshot` does not exist. Do not capture the framebuffer, read canvas pixels, or render glyph grids to verify fonts or layout.
-- For timer/countdown UIs use ASCII digits and the built-in font. If an App TTF is required, read its documented subset and stay within it; do not probe glyph coverage at runtime.
+- For timer/countdown UIs use ASCII digits and built-in Montserrat fonts by name: `font = "montserrat_48"` (available `montserrat_14`/`20`/`24`/`32`/`48`; `"default"` means 14). Do not call `lvgl.font_load()` without a path: this product does not ship the default DATA font. If the App ships a TTF for Chinese, pass its path and stay within its documented subset; never fabricate binary font data.
+- The style key is `font` (`text_font` is accepted as an alias) and takes a built-in name string or a `lvgl.font_load()` object. Other size names are not compiled in and are ignored, so use only the names above.
 - Do not call `restart_device` while creating an App. `publish_app` refreshes the launcher; if a restart is truly required, ask the user.
 - Validate the package by reading files and checking the manifest, imports and paths, then publish once.
+
+## Voice / TTS
+
+Apps may speak with `claw.speak(text[, timeout_ms])` from the Claw runtime.
+
+- It is explicit and works even when automatic Agent-reply speech is off.
+- It blocks the Lua task until playback finishes; use short phrases and keep it
+  out of animation/timer loops.
+- Doubao credentials are global device settings (Claw → 设置 → 豆包语音 /
+  `POST /api/tts/config`). Never embed keys in an App package.
+- TTS is separate from `audio.play()`: use `claw.speak` for arbitrary text,
+  `audio` for bundled OGG/MP3 effects and music.
 
 ## Resolve The Runtime Apps Root
 
@@ -54,6 +67,31 @@ Minimal manifest:
   "visible": true
 }
 ```
+
+## Quick Path (small Apps)
+
+For a single-screen App, scaffold a known-good package instead of authoring the
+manifest and boilerplate by hand:
+
+1. Run the scaffold with `lua_run_script`:
+
+```json
+{"path":"{CUR_SKILL_DIR}/scripts/scaffold_app.lua","args":{"app_id":"my_app","display_name":"我的应用","title":"MY APP"}}
+```
+
+It creates `<APPS_ROOT>/my_app/launcher.json` and a working
+`scripts/main.lua` (dark screen, ASCII title in `montserrat_20`, live clock in
+`montserrat_32`, `claw.abort_requested()` loop). `display_name` may be Chinese;
+`title` must be ASCII because the App ships no TTF.
+
+2. If the request needs a custom screen, replace only `scripts/main.lua` with
+`write_file`, importing just the modules it needs.
+3. Call `publish_app` with the id.
+
+For the quick path, skip the full package-spec read and read only the doc of a
+module you actually add (for example `lua_module_lvgl.md` when using widgets).
+Do not read every module doc. Use the full `Create Or Update` flow when the App
+needs assets, a TTF, a manifest icon, or several files.
 
 ## Create Or Update
 

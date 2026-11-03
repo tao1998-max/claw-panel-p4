@@ -88,12 +88,31 @@ esp_err_t lua_image_borrow_frame(lua_State *L, int index, lua_image_frame_borrow
 esp_err_t lua_image_require_format(lua_State *L, int frame_index, lua_image_format_t format, lua_image_view_t *out);
 
 /**
+ * @brief Retain the frame's buffer in @p format for a C consumer (e.g. LVGL).
+ *
+ * Converts and caches the format if needed, then keeps the shared store alive
+ * until lua_image_release_token() is called with @p token. The data pointer
+ * stays valid across Lua calls and frame release.
+ */
+esp_err_t lua_image_retain_view(lua_State *L, int frame_index, lua_image_format_t format,
+                                const uint8_t **data, size_t *bytes,
+                                int *width, int *height, void **token);
+
+/** Release a token returned by lua_image_retain_view(). Safe with NULL. */
+void lua_image_release_token(void *token);
+
+/**
  * @brief Register the image Lua module under the name "image".
  *
  * Exposes:
+ *   image.new(width, height, format) -> writable canvas
  *   image.convert(frame, format) -> image.frame view
- *   image.load_file(path) -> image.frame
- *   image.save_file(path, frame)
+ *   image.resize(frame, opts) -> image.frame
+ *   image.crop/rotate/flip(frame, ...) -> image.frame
+ *   image.encode(frame [, opts]) -> image.frame (JPEG)
+ *   image.load_file(path [, opts]) -> image.frame
+ *   image.load_raw(path, width, height [, format]) -> image.frame
+ *   image.save_file(path, frame [, opts])
  */
 int luaopen_image(lua_State *L);
 esp_err_t lua_module_image_register(void);

@@ -26,6 +26,7 @@
 #include "claw_panel.h"
 #include "claw_paths.h"
 #include "claw_tasks.h"
+#include "claw_tts.h"
 
 static const char *TAG = "claw_lua";
 
@@ -507,8 +508,18 @@ static int l_panel_demo(lua_State *L)
 
 /* ---------- module ---------- */
 
+static int l_speak(lua_State *L)
+{
+    const char *text = luaL_checkstring(L, 1);
+    lua_Integer timeout = luaL_optinteger(L, 2, 120000);
+    if (timeout < 1000) timeout = 1000;
+    if (timeout > 600000) timeout = 600000;
+    return push_esp_result(L, claw_tts_speak(text, (uint32_t)timeout));
+}
+
 static const luaL_Reg claw_funcs[] = {
     {"log", l_log},
+    {"speak", l_speak},
     {"time", l_time},
     {"uptime_ms", l_uptime_ms},
     {"sleep", l_sleep},

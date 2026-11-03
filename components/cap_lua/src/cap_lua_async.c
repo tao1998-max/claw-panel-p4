@@ -65,6 +65,12 @@ static SemaphoreHandle_t s_job_lock;
 static SemaphoreHandle_t s_event_lock;
 static EXT_RAM_BSS_ATTR cap_lua_job_record_t s_jobs[CAP_LUA_ASYNC_MAX_JOBS];
 static SemaphoreHandle_t s_slot_terminal_sem[CAP_LUA_ASYNC_MAX_JOBS];
+
+/* Small ring of recent failures for the Web debug API (GET /api/lua-failures).
+ * Guarded by s_job_lock. */
+#define CAP_LUA_FAILURE_RING 4
+static cap_lua_failure_t s_failures[CAP_LUA_FAILURE_RING];
+static size_t s_failure_next;
 static size_t s_running_jobs;
 static bool s_runner_started;
 
@@ -433,6 +439,20 @@ static void cap_lua_finish_job(cap_lua_job_ctx_t *ctx,
         }
         s_jobs[ctx->slot].finished_at = time(NULL);
         s_jobs[ctx->slot].task_handle = NULL;
+        if (!ok && !stopped) {
+            cap_lua_failure_t *slot = &s_failures[s_failure_next % CAP_LUA_FAILURE_RING];
+            s_failure_next++;
+            memset(slot, 0, sizeof(*slot));
+            strlcpy(slot->job_id, s_jobs[ctx->slot].job_id, sizeof(slot->job_id));
+            strlcpy(slot->name, s_jobs[ctx->slot].name, sizeof(slot->name));
+            strlcpy(slot->path, s_jobs[ctx->slot].path, sizeof(slot->path));
+            slot->status = s_jobs[ctx->slot].status;
+            strlcpy(slot->error,
+                    error_msg && error_msg[0] ? error_msg :
+                    (stopped ? "stopped by user" : "unknown error"),
+                    sizeof(slot->error));
+            slot->finished_at = s_jobs[ctx->slot].finished_at;
+        }
         if (summary && summary[0]) {
             free(s_jobs[ctx->slot].summary);
             s_jobs[ctx->slot].summary = strdup(summary);
@@ -460,6 +480,26 @@ static void cap_lua_finish_job(cap_lua_job_ctx_t *ctx,
                  error_msg && error_msg[0] ? error_msg :
                  (stopped ? "stopped by user" : "unknown error"));
     }
+}
+
+size_t cap_lua_get_recent_failures(cap_lua_failure_t *out, size_t max)
+{
+    if (!out || max == 0 || !s_job_lock) {
+        return 0;
+    }
+    if (xSemaphoreTake(s_job_lock, pdMS_TO_TICKS(200)) != pdTRUE) {
+        return 0;
+    }
+    size_t total = s_failure_next < CAP_LUA_FAILURE_RING ? s_failure_next : CAP_LUA_FAILURE_RING;
+    if (max > total) {
+        max = total;
+    }
+    for (size_t i = 0; i < max; i++) {
+        size_t idx = (s_failure_next - 1 - i) % CAP_LUA_FAILURE_RING;
+        out[i] = s_failures[idx];
+    }
+    xSemaphoreGive(s_job_lock);
+    return max;
 }
 
 static void cap_lua_job_task(void *arg)
@@ -1118,7 +1158,9 @@ static esp_err_t cap_lua_async_submit_once(const cap_lua_async_job_t *job,
     {
         claw_task_config_t task_config = {
             .name = "cap_lua_async",
-            .stack_size = 12 * 1024,
+            /* Lottie source loading runs ThorVG's rasterizer synchronously on
+             * this task; 12 KB was not enough once lv_lottie was enabled. */
+            .stack_size = 32 * 1024,
             .priority = 4,
             .core_id = tskNO_AFFINITY,
             .stack_policy = CLAW_TASK_STACK_PREFER_PSRAM,

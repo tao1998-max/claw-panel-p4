@@ -94,6 +94,9 @@ esp_err_t claw_api_set_schedule_enabled(const char *id, bool enabled,
 
 /** JSON: compiled/enabled/ready/busy/backend/model/last_error/reply_seq/task. */
 esp_err_t claw_api_agent_status_json(char *out, size_t out_size);
+esp_err_t claw_api_agent_stream_snapshot(const char *session_id, char *out,
+                                         size_t out_size, uint32_t *out_rev,
+                                         bool *out_active);
 
 /** Raw text of the most recent final answer. */
 esp_err_t claw_api_agent_last_reply(char *out, size_t out_size);

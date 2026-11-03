@@ -126,6 +126,13 @@ void AudioService::Start() {
     service_stopped_ = false;
     xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING);
 
+    if (task_exit_sem_ == nullptr) {
+        task_exit_sem_ = xSemaphoreCreateCounting(3, 0);
+    } else {
+        while (xSemaphoreTake(task_exit_sem_, 0) == pdTRUE) {
+        }
+    }
+
     esp_timer_start_periodic(audio_power_timer_, 1000000);
 
 #if 1
@@ -133,6 +140,7 @@ void AudioService::Start() {
     xTaskCreatePinnedToCore([](void* arg) {
         AudioService* audio_service = (AudioService*)arg;
         audio_service->AudioInputTask();
+        xSemaphoreGive(audio_service->task_exit_sem_);
         vTaskDelete(NULL);
     }, "audio_input", 2048 * 3, this, 8, &audio_input_task_handle_, 0);
 
@@ -143,6 +151,7 @@ void AudioService::Start() {
     xTaskCreateWithCaps([](void* arg) {
         AudioService* audio_service = (AudioService*)arg;
         audio_service->AudioOutputTask();
+        xSemaphoreGive(audio_service->task_exit_sem_);
         vTaskDeleteWithCaps(NULL);
     }, "audio_output", 2048 * 2, this, 6, &audio_output_task_handle_,
        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -151,6 +160,7 @@ void AudioService::Start() {
     xTaskCreate([](void* arg) {
         AudioService* audio_service = (AudioService*)arg;
         audio_service->AudioInputTask();
+        xSemaphoreGive(audio_service->task_exit_sem_);
         vTaskDelete(NULL);
     }, "audio_input", 2048 * 2, this, 8, &audio_input_task_handle_);
 
@@ -158,6 +168,7 @@ void AudioService::Start() {
     xTaskCreate([](void* arg) {
         AudioService* audio_service = (AudioService*)arg;
         audio_service->AudioOutputTask();
+        xSemaphoreGive(audio_service->task_exit_sem_);
         vTaskDelete(NULL);
     }, "audio_output", 2048, this, 6, &audio_output_task_handle_);
 #endif
@@ -168,6 +179,7 @@ void AudioService::Start() {
     xTaskCreateWithCaps([](void* arg) {
         AudioService* audio_service = (AudioService*)arg;
         audio_service->OpusCodecTask();
+        xSemaphoreGive(audio_service->task_exit_sem_);
         vTaskDeleteWithCaps(NULL);
     }, "opus_codec", 2048 * 12, this, 5, &opus_codec_task_handle_,
        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -186,6 +198,37 @@ void AudioService::Stop() {
     audio_playback_queue_.clear();
     audio_testing_queue_.clear();
     audio_queue_cv_.notify_all();
+}
+
+bool AudioService::PauseAndWait(uint32_t timeout_ms) {
+    if (service_stopped_) {
+        return true;
+    }
+    paused_bits_ = xEventGroupGetBits(event_group_) &
+                   (AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING |
+                    AS_EVENT_AUDIO_PROCESSOR_RUNNING);
+    Stop();
+    for (int i = 0; i < 3; ++i) {
+        if (xSemaphoreTake(task_exit_sem_, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+            ESP_LOGW(TAG, "audio task did not stop in time");
+            return false;
+        }
+    }
+    return true;
+}
+
+void AudioService::Resume() {
+    Start();
+    if (paused_bits_ & AS_EVENT_WAKE_WORD_RUNNING) {
+        EnableWakeWordDetection(true);
+    }
+    if (paused_bits_ & AS_EVENT_AUDIO_PROCESSOR_RUNNING) {
+        EnableVoiceProcessing(true);
+    }
+    if (paused_bits_ & AS_EVENT_AUDIO_TESTING_RUNNING) {
+        EnableAudioTesting(true);
+    }
+    paused_bits_ = 0;
 }
 
 bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples) {
@@ -828,12 +871,11 @@ void AudioService::CheckAndUpdateAudioPowerState() {
     if (input_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->input_enabled()) {
         codec_->EnableInput(false);
     }
-    if (output_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->output_enabled()) {
-        // Keep TX clock when duplex RX is active; otherwise RX may stall on some boards.
-        if (!(codec_->duplex() && codec_->input_enabled())) {
-            codec_->EnableOutput(false);
-        }
-    }
+    /* Keep the speaker PA/CODEC output enabled after the first playback.
+     * Toggling PA_CTRL and reopening the codec on the first PCM chunk causes a
+     * visible backlight/power transient on this panel. Input power management
+     * is unchanged. */
+    (void)output_elapsed;
     if (!codec_->input_enabled() && !codec_->output_enabled()) {
         esp_timer_stop(audio_power_timer_);
     }

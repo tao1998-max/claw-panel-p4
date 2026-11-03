@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "lua_lvgl_private.h"
+
+#include "lua_image.h"
 #include "src/misc/cache/instance/lv_image_cache.h"
 
 static int image_set_raw(lua_State *L, lv_color_format_t format)
@@ -82,6 +84,66 @@ static int image_set_raw(lua_State *L, lv_color_format_t format)
     record->data2_size = sizeof(*dsc);
     record->data_width = (int)width;
     record->data_height = (int)height;
+    lua_lvgl_unlock();
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/* Zero-copy handoff: point the image object at an image.frame's RGB565 buffer
+ * and keep the image module's store alive until the object is replaced/deleted.
+ * Unlike set_raw_rgb565(), no pixel copy happens here. */
+int lua_lvgl_image_set_frame(lua_State *L)
+{
+    lua_lvgl_obj_ud_t *ud = lua_lvgl_check_ud(L, 1);
+    if (!ud->record || ud->record->type != LUA_LVGL_OBJ_IMAGE) {
+        return luaL_error(L, "set_frame is only valid on lvgl image objects");
+    }
+
+    lv_obj_t *obj = lua_lvgl_lock_widget(L, ud, LUA_LVGL_OBJ_IMAGE);
+    const uint8_t *data = NULL;
+    size_t bytes = 0;
+    int width = 0;
+    int height = 0;
+    void *token = NULL;
+    esp_err_t err = lua_image_retain_view(L, 2, LUA_IMAGE_FORMAT_RGB565LE,
+                                          &data, &bytes, &width, &height, &token);
+    if (err != ESP_OK) {
+        lua_lvgl_unlock();
+        return luaL_error(L, "set_frame expects an image.frame convertible to RGB565 (%s)",
+                          esp_err_to_name(err));
+    }
+
+    uint32_t stride = (uint32_t)width * 2;
+    size_t expected = (size_t)stride * (size_t)height;
+    lv_image_dsc_t *dsc = calloc(1, sizeof(*dsc));
+    if (!dsc || bytes < expected) {
+        free(dsc);
+        lua_image_release_token(token);
+        lua_lvgl_unlock();
+        return luaL_error(L, "lvgl image frame buffer is too small");
+    }
+    dsc->header.magic = LV_IMAGE_HEADER_MAGIC;
+    dsc->header.cf = LV_COLOR_FORMAT_RGB565;
+    dsc->header.w = (uint32_t)width;
+    dsc->header.h = (uint32_t)height;
+    dsc->header.stride = stride;
+    dsc->data_size = (uint32_t)expected;
+    dsc->data = data;
+
+    lua_lvgl_obj_record_t *record = ud->record;
+    if (record->frame_dsc) {
+        lv_image_cache_drop(record->frame_dsc);
+        free(record->frame_dsc);
+        record->frame_dsc = NULL;
+    }
+    if (record->frame_release && record->frame_token) {
+        record->frame_release(record->frame_token);
+    }
+    lv_image_set_src(obj, dsc);
+    record->frame_dsc = dsc;
+    record->frame_token = token;
+    record->frame_release = lua_image_release_token;
+
     lua_lvgl_unlock();
     lua_pushboolean(L, 1);
     return 1;

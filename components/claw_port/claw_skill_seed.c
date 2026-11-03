@@ -18,12 +18,6 @@ typedef struct {
     uint32_t len;
 } claw_seed_file_t;
 
-extern const uint8_t _binary_light_switch_SKILL_md_start[] asm("_binary_light_switch_SKILL_md_start");
-extern const uint8_t _binary_light_switch_SKILL_md_end[] asm("_binary_light_switch_SKILL_md_end");
-extern const uint8_t _binary_light_switch_gpio_light_switch_lua_start[] asm("_binary_light_switch_gpio_light_switch_lua_start");
-extern const uint8_t _binary_light_switch_gpio_light_switch_lua_end[] asm("_binary_light_switch_gpio_light_switch_lua_end");
-extern const uint8_t _binary_light_switch_led_strip_switch_lua_start[] asm("_binary_light_switch_led_strip_switch_lua_start");
-extern const uint8_t _binary_light_switch_led_strip_switch_lua_end[] asm("_binary_light_switch_led_strip_switch_lua_end");
 extern const uint8_t _binary_plan_mode_SKILL_md_start[] asm("_binary_plan_mode_SKILL_md_start");
 extern const uint8_t _binary_plan_mode_SKILL_md_end[] asm("_binary_plan_mode_SKILL_md_end");
 extern const uint8_t _binary_app_creator_SKILL_md_start[] asm("_binary_app_creator_SKILL_md_start");
@@ -32,6 +26,8 @@ extern const uint8_t _binary_app_creator_app_package_spec_md_start[] asm("_binar
 extern const uint8_t _binary_app_creator_app_package_spec_md_end[] asm("_binary_app_creator_app_package_spec_md_end");
 extern const uint8_t _binary_app_creator_resolve_apps_root_lua_start[] asm("_binary_app_creator_resolve_apps_root_lua_start");
 extern const uint8_t _binary_app_creator_resolve_apps_root_lua_end[] asm("_binary_app_creator_resolve_apps_root_lua_end");
+extern const uint8_t _binary_app_creator_scaffold_app_lua_start[] asm("_binary_app_creator_scaffold_app_lua_start");
+extern const uint8_t _binary_app_creator_scaffold_app_lua_end[] asm("_binary_app_creator_scaffold_app_lua_end");
 extern const uint8_t _binary_skills_lab_search_SKILL_md_start[] asm("_binary_skills_lab_search_SKILL_md_start");
 extern const uint8_t _binary_skills_lab_search_SKILL_md_end[] asm("_binary_skills_lab_search_SKILL_md_end");
 extern const uint8_t _binary_skills_lab_downloader_SKILL_md_start[] asm("_binary_skills_lab_downloader_SKILL_md_start");
@@ -72,6 +68,8 @@ extern const uint8_t _binary_builtin_lua_modules_docs_lua_module_button_md_start
 extern const uint8_t _binary_builtin_lua_modules_docs_lua_module_button_md_end[] asm("_binary_builtin_lua_modules_docs_lua_module_button_md_end");
 extern const uint8_t _binary_builtin_lua_modules_docs_lua_module_call_capability_md_start[] asm("_binary_builtin_lua_modules_docs_lua_module_call_capability_md_start");
 extern const uint8_t _binary_builtin_lua_modules_docs_lua_module_call_capability_md_end[] asm("_binary_builtin_lua_modules_docs_lua_module_call_capability_md_end");
+extern const uint8_t _binary_builtin_lua_modules_docs_lua_module_claw_md_start[] asm("_binary_builtin_lua_modules_docs_lua_module_claw_md_start");
+extern const uint8_t _binary_builtin_lua_modules_docs_lua_module_claw_md_end[] asm("_binary_builtin_lua_modules_docs_lua_module_claw_md_end");
 extern const uint8_t _binary_builtin_lua_modules_docs_lua_module_delay_md_start[] asm("_binary_builtin_lua_modules_docs_lua_module_delay_md_start");
 extern const uint8_t _binary_builtin_lua_modules_docs_lua_module_delay_md_end[] asm("_binary_builtin_lua_modules_docs_lua_module_delay_md_end");
 extern const uint8_t _binary_builtin_lua_modules_docs_lua_module_display_md_start[] asm("_binary_builtin_lua_modules_docs_lua_module_display_md_start");
@@ -117,14 +115,12 @@ static void seed_dir(const char *path)
 void claw_skill_seed_write(void)
 {
     const claw_seed_file_t files[] = {
-        { "skills/light_switch/SKILL.md", _binary_light_switch_SKILL_md_start, (uint32_t)(_binary_light_switch_SKILL_md_end - _binary_light_switch_SKILL_md_start) },
-        { "skills/light_switch/scripts/gpio_light_switch.lua", _binary_light_switch_gpio_light_switch_lua_start, (uint32_t)(_binary_light_switch_gpio_light_switch_lua_end - _binary_light_switch_gpio_light_switch_lua_start) },
-        { "skills/light_switch/scripts/led_strip_switch.lua", _binary_light_switch_led_strip_switch_lua_start, (uint32_t)(_binary_light_switch_led_strip_switch_lua_end - _binary_light_switch_led_strip_switch_lua_start) },
         { "skills/board_hardware_info/SKILL.md", _binary_board_hardware_info_SKILL_md_start, (uint32_t)(_binary_board_hardware_info_SKILL_md_end - _binary_board_hardware_info_SKILL_md_start) },
         { "skills/plan_mode/SKILL.md", _binary_plan_mode_SKILL_md_start, (uint32_t)(_binary_plan_mode_SKILL_md_end - _binary_plan_mode_SKILL_md_start) },
         { "skills/app_creator/SKILL.md", _binary_app_creator_SKILL_md_start, (uint32_t)(_binary_app_creator_SKILL_md_end - _binary_app_creator_SKILL_md_start) },
         { "skills/app_creator/references/app-package-spec.md", _binary_app_creator_app_package_spec_md_start, (uint32_t)(_binary_app_creator_app_package_spec_md_end - _binary_app_creator_app_package_spec_md_start) },
         { "skills/app_creator/scripts/resolve_apps_root.lua", _binary_app_creator_resolve_apps_root_lua_start, (uint32_t)(_binary_app_creator_resolve_apps_root_lua_end - _binary_app_creator_resolve_apps_root_lua_start) },
+        { "skills/app_creator/scripts/scaffold_app.lua", _binary_app_creator_scaffold_app_lua_start, (uint32_t)(_binary_app_creator_scaffold_app_lua_end - _binary_app_creator_scaffold_app_lua_start) },
         { "skills/skills_lab_search/SKILL.md", _binary_skills_lab_search_SKILL_md_start, (uint32_t)(_binary_skills_lab_search_SKILL_md_end - _binary_skills_lab_search_SKILL_md_start) },
         { "skills/skills_lab_downloader/SKILL.md", _binary_skills_lab_downloader_SKILL_md_start, (uint32_t)(_binary_skills_lab_downloader_SKILL_md_end - _binary_skills_lab_downloader_SKILL_md_start) },
         { "skills/skills_lab_downloader/scripts/download_package.lua", _binary_skills_lab_downloader_download_package_lua_start, (uint32_t)(_binary_skills_lab_downloader_download_package_lua_end - _binary_skills_lab_downloader_download_package_lua_start) },
@@ -146,6 +142,7 @@ void claw_skill_seed_write(void)
         { "skills/builtin_lua_modules/scripts/docs/lua_module_button.md", _binary_builtin_lua_modules_docs_lua_module_button_md_start, (uint32_t)(_binary_builtin_lua_modules_docs_lua_module_button_md_end - _binary_builtin_lua_modules_docs_lua_module_button_md_start) },
 #endif
         { "skills/builtin_lua_modules/scripts/docs/lua_module_call_capability.md", _binary_builtin_lua_modules_docs_lua_module_call_capability_md_start, (uint32_t)(_binary_builtin_lua_modules_docs_lua_module_call_capability_md_end - _binary_builtin_lua_modules_docs_lua_module_call_capability_md_start) },
+        { "skills/builtin_lua_modules/scripts/docs/lua_module_claw.md", _binary_builtin_lua_modules_docs_lua_module_claw_md_start, (uint32_t)(_binary_builtin_lua_modules_docs_lua_module_claw_md_end - _binary_builtin_lua_modules_docs_lua_module_claw_md_start) },
         { "skills/builtin_lua_modules/scripts/docs/lua_module_delay.md", _binary_builtin_lua_modules_docs_lua_module_delay_md_start, (uint32_t)(_binary_builtin_lua_modules_docs_lua_module_delay_md_end - _binary_builtin_lua_modules_docs_lua_module_delay_md_start) },
         { "skills/builtin_lua_modules/scripts/docs/lua_module_display.md", _binary_builtin_lua_modules_docs_lua_module_display_md_start, (uint32_t)(_binary_builtin_lua_modules_docs_lua_module_display_md_end - _binary_builtin_lua_modules_docs_lua_module_display_md_start) },
 #if CONFIG_TEMPLATE_CLAW_LUA_UNUSED_HW_MODULES
@@ -171,8 +168,6 @@ void claw_skill_seed_write(void)
         { "skills/builtin_lua_modules/scripts/docs/lua_module_thread.md", _binary_builtin_lua_modules_docs_lua_module_thread_md_start, (uint32_t)(_binary_builtin_lua_modules_docs_lua_module_thread_md_end - _binary_builtin_lua_modules_docs_lua_module_thread_md_start) },
     };
     static const char *const dirs[] = {
-        CLAW_STORAGE_SYSTEM_DIR "/skills/light_switch",
-        CLAW_STORAGE_SYSTEM_DIR "/skills/light_switch/scripts",
         CLAW_STORAGE_SYSTEM_DIR "/skills/board_hardware_info",
         CLAW_STORAGE_SYSTEM_DIR "/skills/plan_mode",
         CLAW_STORAGE_SYSTEM_DIR "/skills/app_creator",

@@ -140,6 +140,8 @@ def main() -> int:
     if app_validator.is_file() and examples.is_dir():
         targets = [("countdown", examples / "countdown", None, None),
                    ("mqtt_panel", examples / "mqtt_panel", None, None),
+                   ("network_radio", examples / "network_radio", None, None),
+                   ("anim_lab", examples / "anim_lab" / "app", "anim_lab", None),
                    ("sd_fallback", examples / "sd_fallback" / "app", "sd_fallback",
                     examples / "sd_fallback" / "sd")]
         for name, app_dir, remote_id, sd_dir in targets:

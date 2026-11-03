@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "ai_ui.h"
+#include "app_icon.h"
 #include "app_registry.h"
 #include "claw_api.h"
 #include "esp_heap_caps.h"
@@ -13,23 +14,18 @@
 #include "i18n.h"
 #include "ui_widgets.h"
 
-#define APPS_MAX_ITEMS   16
+#define APPS_MAX_ITEMS 16
 
-/* 卡片栅格：976 页宽 = 16 边距 + 464 卡宽 + 16 列间距 + 464 卡宽 + 16 边距 */
-#define CARD_W        464
-#define CARD_H        96
-#define CARD_ROW_GAP  12
-#define CARD_COL_GAP  16
-#define CARD_SIDE     16
-
-/* 图标色块按索引循环的四色强调色 */
-static const uint32_t s_tile_palette[] = {
-    UI_COLOR_ACCENT,
-    UI_COLOR_VIOLET,
-    UI_COLOR_CYAN,
-    UI_COLOR_OK,
-};
-#define TILE_PALETTE_COUNT (sizeof(s_tile_palette) / sizeof(s_tile_palette[0]))
+/* 手机式图标栅格：976 = 6×156 + 5×8，图标 96×96，下面名字 + 版本 */
+#define GRID_COLS     6
+#define TILE_W        156
+#define TILE_H        146
+#define TILE_GAP      8
+#define ICON_SIZE     96
+#define ICON_X        ((TILE_W - ICON_SIZE) / 2)
+#define ICON_Y        6
+#define NAME_Y        106
+#define VERSION_Y     126
 
 static const char *TAG = "ui.apps";
 
@@ -38,6 +34,8 @@ typedef struct {
     char name[64];
     char entry[256];
     char args[512];
+    char icon[192];
+    char version[32];
 } app_item_t;
 
 typedef struct {
@@ -53,6 +51,19 @@ static lv_obj_t *s_status;
 static lv_timer_t *s_timer;
 static volatile bool s_dirty;
 static bool s_listener_registered;
+
+/* Decoded icon descriptors owned by the current tile set. */
+static lv_image_dsc_t *s_icons[APPS_MAX_ITEMS];
+static size_t s_icon_count;
+
+static void free_app_icons(void)
+{
+    for (size_t i = 0; i < s_icon_count; i++) {
+        app_icon_free(s_icons[i]);
+        s_icons[i] = NULL;
+    }
+    s_icon_count = 0;
+}
 
 static esp_err_t collect_item(const app_registry_entry_t *entry, void *user_ctx)
 {
@@ -74,6 +85,9 @@ static esp_err_t collect_item(const app_registry_entry_t *entry, void *user_ctx)
     strlcpy(items[index].entry, entry->entry ? entry->entry : "", sizeof(items[index].entry));
     strlcpy(items[index].args, entry->args_json ? entry->args_json : "{}",
             sizeof(items[index].args));
+    strlcpy(items[index].icon, entry->icon ? entry->icon : "", sizeof(items[index].icon));
+    strlcpy(items[index].version, entry->version ? entry->version : "",
+            sizeof(items[index].version));
     return ESP_OK;
 }
 
@@ -142,48 +156,107 @@ static void launch_clicked(lv_event_t *e)
              esp_err_to_name(err), out);
 }
 
-static void add_app_card(const app_item_t *item, int index)
+static size_t utf8_first_char_len(const char *text)
 {
-    int col = index % 2;
-    int row = index / 2;
-    int x = CARD_SIDE + col * (CARD_W + CARD_COL_GAP);
-    int y = row * (CARD_H + CARD_ROW_GAP);
+    unsigned char c = (unsigned char)text[0];
+    if (c < 0x80) {
+        return 1;
+    }
+    if ((c & 0xE0) == 0xC0) {
+        return 2;
+    }
+    if ((c & 0xF0) == 0xE0) {
+        return 3;
+    }
+    return 4;
+}
 
-    lv_obj_t *card = ui_card_create(s_list, x, y, CARD_W, CARD_H);
-    if (!card) {
+/* No icon file: draw a gradient tile with the App's first character. */
+static void add_icon_fallback(lv_obj_t *tile, const app_item_t *item)
+{
+    lv_obj_t *art = ui_gradient_tile_create(tile, ICON_X, ICON_Y, ICON_SIZE, ICON_SIZE,
+                                            22, UI_COLOR_ACCENT_DEEP, UI_COLOR_VIOLET);
+    if (!art) {
         return;
     }
-    /* 整卡可点：按下时提亮一档 + 强调色描边，视觉反馈比单独按钮强 */
-    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_bg_color(card, lv_color_hex(UI_COLOR_SURFACE_HI), LV_STATE_PRESSED);
-    lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_STATE_PRESSED);
-    lv_obj_set_style_border_color(card, lv_color_hex(UI_COLOR_ACCENT), LV_STATE_PRESSED);
+    const lv_font_t *font = ai_ui_text_font();
+    char initial[8] = {0};
+    size_t len = item->name[0] ? utf8_first_char_len(item->name) : 0;
+    if (len > 0 && len < sizeof(initial)) {
+        memcpy(initial, item->name, len);
+    }
+    if (initial[0] && font) {
+        lv_obj_t *label = ui_label_create(art, initial, 0, 0, UI_COLOR_TEXT, font);
+        if (label) {
+            lv_obj_center(label);
+            return;
+        }
+    }
+    lv_obj_t *label = ui_label_create(art, LV_SYMBOL_IMAGE, 0, 0,
+                                      UI_COLOR_TEXT, UI_FONT_ICON);
+    if (label) {
+        lv_obj_center(label);
+    }
+}
 
-    /* 左侧图标色块，颜色按索引在强调色板里轮换 */
-    uint32_t tile_color = s_tile_palette[index % TILE_PALETTE_COUNT];
-    (void)ui_badge_create(card, 16, (CARD_H - 56) / 2, 56, LV_SYMBOL_IMAGE, tile_color);
+static void add_app_tile(const app_item_t *item, int index)
+{
+    int col = index % GRID_COLS;
+    int row = index / GRID_COLS;
+    int x = col * (TILE_W + TILE_GAP);
+    int y = row * (TILE_H + TILE_GAP);
+
+    lv_obj_t *tile = lv_obj_create(s_list);
+    if (!tile) {
+        return;
+    }
+    lv_obj_set_pos(tile, x, y);
+    lv_obj_set_size(tile, TILE_W, TILE_H);
+    lv_obj_set_style_bg_opa(tile, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tile, 0, 0);
+    lv_obj_set_style_radius(tile, 18, 0);
+    lv_obj_set_style_pad_all(tile, 0, 0);
+    lv_obj_remove_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
+    /* 按下反馈：一块很淡的高亮，和手机桌面一致 */
+    lv_obj_set_style_bg_color(tile, lv_color_hex(UI_COLOR_SURFACE_HI), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(tile, 70, LV_STATE_PRESSED);
+
+    lv_image_dsc_t *dsc = item->icon[0] ? app_icon_load(item->icon) : NULL;
+    if (dsc && s_icon_count < APPS_MAX_ITEMS) {
+        s_icons[s_icon_count++] = dsc;
+        lv_obj_t *img = lv_image_create(tile);
+        if (img) {
+            lv_image_set_src(img, dsc);
+            lv_obj_set_pos(img, ICON_X, ICON_Y);
+        } else {
+            app_icon_free(dsc);
+            s_icons[--s_icon_count] = NULL;
+            add_icon_fallback(tile, item);
+        }
+    } else {
+        add_icon_fallback(tile, item);
+    }
 
     /* App 名可能由 Agent 生成，用共享 puhui 字体而不是 i18n 子集 */
     const lv_font_t *name_font = ai_ui_text_font();
-    lv_obj_t *name = ui_label_create(card, item->name, 88, 24,
+    lv_obj_t *name = ui_label_create(tile, item->name, 0, NAME_Y,
                                      UI_COLOR_TEXT,
                                      name_font != NULL ? name_font : UI_FONT_BODY);
     if (name) {
-        lv_obj_set_width(name, 248);
+        lv_obj_set_width(name, TILE_W - 10);
+        lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
     }
-    lv_obj_t *path = ui_label_create(card, item->entry, 88, 52,
-                                     UI_COLOR_MUTED, UI_FONT_SMALL);
-    if (path) {
-        lv_obj_set_width(path, 248);
-        lv_label_set_long_mode(path, LV_LABEL_LONG_DOT);
-    }
 
-    /* 右侧「启动」胶囊是静态提示，点击由整卡统一响应 */
-    lv_obj_t *chip = ui_chip_create(card, i18n_str(STR_APPS_LAUNCH),
-                                    UI_COLOR_ACCENT, NULL);
-    if (chip) {
-        lv_obj_align(chip, LV_ALIGN_RIGHT_MID, -16, 0);
+    if (item->version[0]) {
+        lv_obj_t *version = ui_label_create(tile, item->version, 0, VERSION_Y,
+                                            UI_COLOR_MUTED, UI_FONT_SMALL);
+        if (version) {
+            lv_obj_set_width(version, TILE_W - 10);
+            lv_obj_set_style_text_align(version, LV_TEXT_ALIGN_CENTER, 0);
+            lv_label_set_long_mode(version, LV_LABEL_LONG_DOT);
+        }
     }
 
     launch_ref_t *ref = calloc(1, sizeof(*ref));
@@ -193,8 +266,8 @@ static void add_app_card(const app_item_t *item, int index)
     strlcpy(ref->name, item->name, sizeof(ref->name));
     strlcpy(ref->entry, item->entry, sizeof(ref->entry));
     strlcpy(ref->args, item->args, sizeof(ref->args));
-    lv_obj_add_event_cb(card, launch_clicked, LV_EVENT_CLICKED, ref);
-    lv_obj_add_event_cb(card, launch_ref_delete_cb, LV_EVENT_DELETE, ref);
+    lv_obj_add_event_cb(tile, launch_clicked, LV_EVENT_CLICKED, ref);
+    lv_obj_add_event_cb(tile, launch_ref_delete_cb, LV_EVENT_DELETE, ref);
 }
 
 static void rebuild(void)
@@ -209,6 +282,7 @@ static void rebuild(void)
     }
     size_t count = collect_apps(items);
 
+    free_app_icons();
     lv_obj_clean(s_list);
     if (count == 0) {
         if (s_empty) {
@@ -221,9 +295,10 @@ static void rebuild(void)
         lv_obj_add_flag(s_empty, LV_OBJ_FLAG_HIDDEN);
     }
     for (size_t i = 0; i < count && i < APPS_MAX_ITEMS; i++) {
-        add_app_card(&items[i], (int)i);
+        add_app_tile(&items[i], (int)i);
     }
-    ESP_LOGI(TAG, "home app list rebuilt: %u item(s)", (unsigned)count);
+    ESP_LOGI(TAG, "home app grid rebuilt: %u item(s), %u icon(s)",
+             (unsigned)count, (unsigned)s_icon_count);
     heap_caps_free(items);
 }
 
@@ -266,7 +341,6 @@ static void page_home_create(lv_obj_t *content)
     lv_obj_set_style_bg_opa(s_list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_list, 0, 0);
     lv_obj_set_style_pad_all(s_list, 0, 0);
-    lv_obj_set_style_pad_row(s_list, 8, 0);
     lv_obj_add_flag(s_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_list, LV_DIR_VER);
 
@@ -285,6 +359,7 @@ static void page_home_create(lv_obj_t *content)
 
 static void page_home_destroy(void)
 {
+    free_app_icons();
     if (s_timer) {
         lv_timer_delete(s_timer);
         s_timer = NULL;

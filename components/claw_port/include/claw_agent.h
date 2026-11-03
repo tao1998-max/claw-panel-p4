@@ -45,6 +45,11 @@ esp_err_t claw_agent_status_json(char *out, size_t out_size);
 /** Copy the most recent final answer (raw text, not JSON). */
 esp_err_t claw_agent_last_reply(char *out, size_t out_size);
 
+/** Snapshot the assistant text currently streaming for a session. */
+esp_err_t claw_agent_stream_snapshot(const char *session_id, char *out,
+                                     size_t out_size, uint32_t *out_rev,
+                                     bool *out_active);
+
 /**
  * Ask synchronously. Blocks at most timeout_ms. `origin` is only recorded in
  * logs/session metadata ("xiaozhi" or "panel").

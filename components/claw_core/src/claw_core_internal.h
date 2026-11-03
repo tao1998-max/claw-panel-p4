@@ -103,6 +103,10 @@ struct claw_core_state {
     void *collect_stage_note_user_ctx;
     claw_core_call_cap_fn call_cap;
     void *cap_user_ctx;
+    void (*text_delta_begin)(const char *session_id, void *user_ctx);
+    void (*text_delta)(const char *text, size_t len, void *user_ctx);
+    void (*text_delta_end)(void *user_ctx);
+    void *text_delta_user_ctx;
     claw_core_context_provider_t *context_providers;
     size_t context_provider_count;
     size_t context_provider_capacity;

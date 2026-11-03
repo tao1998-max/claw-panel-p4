@@ -9,11 +9,11 @@ ESP32-P4 + ESP32-C6，7 寸 1024×600 IPS 电容触摸屏的**基础模板工程
 |---|---|---|---|
 | 显示 | JD9165 MIPI-DSI 1024×600 | DSI 2-lane，背光 GPIO23 | BSP |
 | 触摸 | GT911（I2C） | SDA7 / SCL8 | BSP |
-| 音频 | ES8311 + 功放 | MCLK13/BCLK12/WS10/DOUT9/DIN48/PA11 | BSP；小智模式 16 kHz 单声道双工 |
+| 音频 | ES8311 + 功放 | MCLK13/BCLK12/WS10/DOUT9/DIN48/PA11 | BSP；小智模式 16 kHz 单声道双工；本地/HTTP(S) MP3 流播放时独占并切到原生采样率 |
 | SD 卡 | SDMMC 4-bit | CLK43/CMD44/D0-D3 39-42 | BSP |
-| RTC | EPSON RX8025T-UC（I2C 0x32） | SDA7 / SCL8 | 本工程 `hw_rtc.c`；掉电保时，启动播种系统时间 |
+| RTC | EPSON RX8025T-UC（I2C 0x32） | SDA7 / SCL8 | 本工程 `hw_rtc.c`；掉电保时（UTC），启动播种系统时间 |
 | 摄像头 | **OV02C10** MIPI-CSI 1920×1080 RAW10 → ISP → RGB565 | DSI 2-lane，SCCB 复用 SDA7/SCL8 | esp_video 2.5.0 + 本地 esp_cam_sensor 2.1.0 |
-| RS485 | UART1 | TX26 / RX27 | 本工程 |
+| RS485 | UART1 | TX26 / RX27 | 本工程只做引脚/状态自检；Lua `uart` 模块按需独占（EN 自动） |
 | 以太网 | IP101 RMII | MDC31/MDIO52/RST51/CLK50 | 本工程 |
 | Wi-Fi / BLE | ESP32-C6 经 SDIO | CLK18/CMD19/D0-D3 14-17/RST54 | 本工程，默认关闭 |
 
@@ -24,9 +24,17 @@ ESP32-P4 + ESP32-C6，7 寸 1024×600 IPS 电容触摸屏的**基础模板工程
 > SPI1 写走 `SPI_FLASH_CACHE_NO_DISABLE` 路径，亮屏写 FAT/NVS 不再闪屏。代价是 PSRAM
 > 多占用约 3.7MB、启动稍慢。
 >
-> **内部 RAM**：LVGL 的 draw/rotate 缓冲和 LVGL 对象都放到 PSRAM；Wi-Fi/LWIP、
-> TLS 缓冲同样优先 PSRAM。启动 30s 后内部堆实测 **free 142 KB / largest 53 KB /
-> min 100 KB**（优化前约 52/31/43 KB），PSRAM 仍有约 22.5 MB 空闲。
+> **屏幕撕裂/闪烁**：启用官方防撕裂组合
+> `CONFIG_BSP_LCD_DPI_BUFFER_NUMS=2` + `CONFIG_BSP_DISPLAY_LVGL_AVOID_TEAR=y`
+> （direct mode）。LVGL 只把脏区绘制到当前 DPI framebuffer，再同步脏区到另一块，
+> 在 `on_refresh_done`（VSYNC）回调里切换扫描缓冲，避免单缓冲时扫描与改写同一块内存。
+> 两块 1024×600 RGB565 framebuffer 约占 **2.4MB PSRAM**。不要改回 `BUFFER_NUMS=1`
+> 或关闭 `AVOID_TEAR`；也不要用 full refresh，它会在每次更新时重绘整屏，操作明显变卡。
+>
+> **内部 RAM**：LVGL 对象放 PSRAM；Wi-Fi/LWIP、TLS 缓冲同样优先 PSRAM。
+> 启动 30s 后内部堆随 AI 语音处理是否静音、网络/IM 初始化状态波动，实测约
+> **free 100–200 KB / largest 31–118 KB / min 60–155 KB**；PSRAM 仍有约 21 MB 空闲。
+> 具体以启动日志的 `claw_port: heap@30s` 为准。
 
 ## 目录结构
 
@@ -53,6 +61,7 @@ p4_template/
 │       ├── materialdesignicons-webfont.ttf
 │       └── LICENSE
 ├── tools/ai_assets/             build_assets.py：打包字体 + 唤醒词模型
+├── tools/make_app_icons.py      App 图标生成（96x96 baseline JPEG，ffmpeg 编码）
 ├── skills/panel-app-design/     ★外部 AI 的面板 App 设计 Skill（FAT/SD 包 + 素材后备 + 网络）
 └── main/
     ├── app/                     启动编排：NVS → settings → 显示 → UI → 外设
@@ -69,7 +78,7 @@ p4_template/
     │   ├── hw_audio.c           ES8311 播放/录音（AI 开启时转发 16 kHz）
     │   ├── hw_storage.c         SD 卡挂载与容量
     │   ├── hw_rtc.c             RX8025T-UC RTC 读写/系统时间同步
-    │   ├── hw_rs485.c           RS485 收发（默认回环）
+    │   ├── hw_rs485.c           RS485 引脚/状态自检（UART1 交给 Lua uart）
     │   ├── hw_eth.c             IP101 以太网 + DHCP
     │   ├── hw_camera.c          MIPI-CSI 自检取帧
     │   └── hw_wifi.c            C6 Wi-Fi：连接 + 扫描 + 断开 + SNTP 校时
@@ -90,7 +99,7 @@ p4_template/
     │   ├── ui_shell.c,h         整屏 Aurora 背景 + 顶栏 + 内容区 + 底栏 + 息屏
     │   ├── ui_widgets.c,h       卡片/滑条/分段/菜单行/确认弹层
     │   ├── pages/               业务页
-    │   │   ├── page_home.c      应用主页（双列卡片启动器，FAT/SD 应用）
+    │   │   ├── page_home.c      应用主页（手机式图标网格：图标+名称+版本）
     │   │   ├── page_sysinfo.c   设备状态（KPI + 模块网格）
     │   │   ├── page_history.c   历史曲线（日期时间轴 + 游标/缩放 + 刻度平移 + 区段查找）
     │   │   ├── page_claw.c      Claw 自动化（任务 / 脚本 / 设置）
@@ -129,7 +138,7 @@ p4_template/
   - 历史曲线：单窗口 XY 曲线，下拉框切换温度 / 压力；X 轴显示日期时间，窗口长度可点胶囊中间数值输入（时/分/秒，不设实际最大值）或用 +/- / 双指捏合缩放；显示区内单指只做游标读数，底部 X 刻度左右拖平移时间、左侧 Y 刻度上下拖平移数值；右上角“区段查找”弹窗直接在日历上点起点/终点（靛蓝/紫罗兰两种颜色），再选起止时分，确认后曲线跳到该区段；
   - 设置：272 px 分类栏 + 688 px 详情卡，详情按分类切换并从下方轻轻托起；系统分类顶部有「时间设置」，可调年/月/日/时/分并写回 RX8025T。
 - 双指缩放：`sdkconfig.defaults` 已开启 `CONFIG_LV_USE_FLOAT` 和 `CONFIG_LV_USE_GESTURE_RECOGNITION`；GT911 的 5 点触摸由 `esp_lvgl_port` 送进 LVGL 手势识别。历史页把 pinch 阈值调到 1.06 / 0.94，并把旋转、双指平移阈值调高，避免它们抢在 pinch 前面重置手势。
-- 时间：板载 RX8025T-UC 经 I²C 0x32 提供掉电保时；启动时优先用 RTC 播种系统时间，SNTP 校时后再回写 RTC。顶栏右侧显示日期时间；设置 → 系统 → 时间设置可手动校时。历史页在时间未初始化时用固件编译时间兜底；时区为 `CST-8`。
+- 时间：板载 RX8025T-UC 经 I²C 0x32 提供掉电保时，**RTC 内统一存 UTC**；启动用 UTC 播种系统时间，SNTP 校时后回写 UTC，顶栏按本地时区显示。旧固件把 RTC 当本地时间读，会导致上电慢 8 小时；新固件用 NVS 标记做了一次性迁移（`hw_rtc.c` 的 `s_rtc_utc`）。设置 → 系统 → 时间设置可手动校时（输入按本地时间），历史页在时间未初始化时用固件编译时间兜底；时区默认 `CST-8`。
 - 全屏背景图运行时生成在 PSRAM（1024×600 RGB565，约 1.2 MB）；`hw_display.c` 的 LVGL 任务栈已调到 16 KB，8 KB 会在页面切换绘制时触发 stack protection fault。
 - 设计预览见 `docs/mockups/new_*.png`（`python docs/mockups/gen_redesign.py` 可重新生成，需要 Pillow）。
 
@@ -185,14 +194,22 @@ NVS namespace `sys`，键 `bright / vol / lang / soff`。
 |---|---|---|
 | 显示 | OK | `1024x600 JD9165`，`Display initialized`，背光 80% |
 | 触摸 | OK | `GT911 TouchPad_ID:0x39,0x31,0x31` |
-| 音频 | OK | `ES8311 Work in Slave mode`，AI 模式 16 kHz/16bit 双工；关闭 AI 时 44.1 kHz |
+| 音频 | OK | `ES8311 Work in Slave mode`，AI 模式 16 kHz/16bit 双工；本地 MP3 独占并切到原生采样率；关闭 AI 时 44.1 kHz |
 | SD 卡 | OK（当前 480 MB 卡） | `hw.sd: sdcard mounted at /sdcard (480 MB, 8 files)`；无卡时打印 `no card` 并继续启动 |
-| RS485 | OK | `rs485 ready: TX=26 RX=27 @115200` |
+| RS485 | OK | `rs485 ready: TX=26 RX=27 @115200; open with uart.new(1, 26, 27, 115200)` |
 | 以太网 | OK（未插网线） | `ip101 started (mdc=31 mdio=52 rst=51)`，等待 link |
-| 摄像头 | OK | `ov02c10: Detected Camera sensor PID=0x5602`，`captured one frame: 1920x1080, 4147200 bytes` |
+| 摄像头 | OFF（硬件为 OV02C10） | 当前固件默认关闭；开启 `CONFIG_TEMPLATE_ENABLE_CAMERA` 后自检 `PID=0x5602` 并抓到 1920×1080 一帧 |
 | Wi-Fi | OK | C6 经 SDIO 起来，`connected`，拿到 `192.168.1.179` |
 
-整机启动到 `Returned from app_main()` 约 **8.9 s**（ETH PHY 复位 4 s、C6 SDIO 握手 1.5 s、摄像头自检约 0.4 s）。
+启动时间（实测，ETH/WiFi 已改为后台初始化）：
+
+- UI 首屏约 **3.5 s**
+- App 图标约 **4.9 s**
+- 本地 Claw/AI/Web 初始化完成、`Returned from app_main()` 约 **5.3 s**
+- WiFi 拿到 IP 约 **12.6 s**（C6 SDIO 握手 + 关联 + DHCP）
+- IM gateway 在 IP 后启动（约 **13.7 s**）
+
+ETH PHY 约 4.7 s，但已放到后台，不再阻塞 UI/Claw；C6 SDIO 握手与 WiFi 关联也在后台与 Claw 初始化并行。
 
 ### 摄像头踩坑记（三步，缺一不可）
 
@@ -224,17 +241,23 @@ NVS namespace `sys`，键 `bright / vol / lang / soff`。
 实测 3 s、5 s 两种超时都是刚好卡满才返回（帧其实 88 ms 就到了）。
 所以 `hw_camera.c` 里取首帧用非阻塞 `DQBUF` + 10 ms 轮询，而不是 `select()`。
 
-### 其他两个实测提示
+### 其他实测提示
 
-1. **Wi-Fi 版本不匹配但不影响使用**
-   `W transport: Version mismatch: Host [2.11.0] > Co-proc [2.3.0]`。
-   板上 C6 从机固件是 `JC-C6-slave_v2.3.2`，比 `esp_hosted 2.11.x` 期望的旧一档。
-   实测仍能连上 AP 并 `got ip`，只是长时间跑可能出现 RPC 超时；要根治就按厂商说明单独给 C6 烧从机固件。
+1. **C6 从机固件（已升级）**
+   板上 C6 原为厂商 `JC-C6-slave_v2.3.2`，与 `esp_hosted 2.11.x` 不匹配；现已通过
+   P4 的 SDIO OTA 升级到 **esp_hosted 2.11.7**，启动日志不再出现
+   `Version mismatch`，Wi-Fi 正常。
+   维护时重新升级：
+   1. 用 `managed_components/espressif__esp_hosted/slave` 编译 2.11.7 的 C6 固件
+      （`idf.py set-target esp32c6; idf.py build`），得到 `build/network_adapter.bin`；
+   2. 上传到 SD：`POST /api/sd-files/upload?path=/c6/network_adapter.bin`；
+   3. `POST /api/c6-ota`，P4 会通过现有 SDIO 传输固件并自动重启。
+   该端点只做维护用；升级期间 Wi-Fi/HTTP 会短暂中断。
 
-2. **`ledc: GPIO 23 is not usable` 是 BSP 的重复初始化**
-   `bsp_display_start_with_config()` 和 `bsp_display_new_with_handles()` 各自调了一次
-   `bsp_display_brightness_init()`，第二次 LEDC 申请已被自己占用的 GPIO23 就告警了。
-   背光实际工作正常（日志里 100% → 80% 生效），不用管。
+2. **`ledc: GPIO 23 is not usable`（已修复）**
+   之前 `bsp_display_start_with_config()` 和 `bsp_display_new_with_handles()` 各自调了
+   一次 `bsp_display_brightness_init()`，第二次申请已被自己占用的 GPIO23 就告警。
+   现在删掉了前者的重复调用，启动日志不再出现该警告，背光/亮度正常。
 
 ## 编译与烧录
 
@@ -330,9 +353,10 @@ idf.py menuconfig
 
 - **摄像头**：本板模组是 OV02C10，接好即可用，上电会自检并抓一帧（`Stream=1` 后约 90 ms）。
   取流细节见上面「摄像头踩坑记」；真正把画面刷到屏上参考厂商 `video_lcd_display` 示例。
-- **Wi-Fi**：P4 没有射频，必须靠板载 C6。要求 C6 上的从机固件与 `esp_hosted 2.11.x` 匹配，
-  否则日志会刷 `Version mismatch ... RPC timeouts`。厂商提供的 `JC-C6-slave_v2.3.2.bin`
-  需要通过 C6 的 UART 烧录口单独烧写。
+- **Wi-Fi**：P4 没有射频，必须靠板载 C6。C6 从机固件现已升级到 `esp_hosted 2.11.7`，
+  与 host 匹配；维护时可通过 `/api/c6-ota` 从 SD 重新写入
+  `managed_components/espressif__esp_hosted/slave` 编出的 `network_adapter.bin`，
+  不需要 C6 UART。仅首次/救砖才需要 C6 的 UART 烧录口。
 
 ## 小智 AI 语音助手（半双工）
 
@@ -361,7 +385,7 @@ idf.py -p COM27 flash monitor
 
 ## ESP-Claw 本地自动化（Lua / 后台任务 / 定时）
 
-小智云端负责听懂和生成脚本，ESP-Claw 负责在本地安全执行。底栏第 4 项 **Claw** 页面按 ESP-Claw Web 管理端的顶层导航组织：左侧可滚动栏（系统状态 / 系统设置 / 记忆管理 / 在线聊天 / 定时任务 / 能力管理 / Lua 模块管理 / 文件管理）、顶部状态 chips、页面标题/描述 + 内容列表。
+小智云端负责听懂和生成脚本，ESP-Claw 负责在本地安全执行。底栏第 4 项 **Claw** 页面收敛为四个页签：**在线聊天 / 定时任务 / 工作区（记忆+文件）/ 设置**，采用与主设置页一致的左侧轨道 + 右侧详情布局；轨道底部固定显示 Agent、Lua 权限和运行中任务状态，顶部不再重复状态 chips。
 
 ### 示例应用：21 点
 
@@ -375,15 +399,41 @@ idf.py -p COM27 flash monitor
 - 依赖固件的 `CONFIG_LV_USE_TINY_TTF=y` 和 `lua_module_lvgl` 的 DATA 根；
 - 源码同时在工程 `apps/blackjack/`，上传后主页会显示「21点」。
 
+### RS485 串口（Lua uart）
+
+板载 RS485 收发器的 R/D 接 UART1：**TX=GPIO26、RX=GPIO27，默认 115200 8N1**，方向 EN 由硬件自动处理。固件只在启动时做一次引脚/状态自检，随后把 UART1 释放给官方 `uart` 模块；脚本打开期间独占该端口。
+
+```lua
+local uart = require("uart")
+local u = uart.new(1, 26, 27, 115200)
+
+u:flush_input()
+u:write({0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x84, 0x0A})  -- Modbus RTU 示例
+local reply = u:read(64, 500)   -- 最多等 500 ms
+u:close()
+```
+
+- `read` / `read_line` 的 timeout 单位是 ms，0 为非阻塞；接收缓冲 1 KiB
+- 端口是单所有者的：脚本 `close()` 或任务退出后其它脚本才能再打开
+- 同一端口上不要同时跑两个任务；Modbus 这类“发完等应答”的协议建议先 `flush_input()`
+
 ### 面板 App 设计 Skill（外部 AI）
 
 `skills/panel-app-design/` 是给 Claude Code / Claude.ai / 其他 AI 平台使用的
 Claude Agent Skill，不是设备侧小爪 Skill。它教外部 AI 生成 1024×600 的 LVGL
 Lua App，包括：
 
-- 包契约、`launcher.json`、64 KiB 脚本上限、上传后重启；**FAT 或 SD 整包部署**
+- 包契约、`launcher.json`、64 KiB 脚本上限、上传后刷新（`/api/apps/refresh`）；**FAT 或 SD 整包部署**
   （`/fatfs/claw/data/apps/<id>/` 或 `/sdcard/apps/<id>/`，SD 包原地启动）；
 - 中文字体子集（`fontTools`）与缺字校验；TTF 现在也可随 SD 包放在 SD 上；
+- **App 图标与版本**：96×96 baseline JPEG（`assets/icon.jpg`）+ `version` 字段，
+  首页网格显示并随包更新；`make_app_icons.py` 可生成图标；
+- **图像画布/零拷贝**：`image.new` 画布绘图 + `img:set_frame()` 零拷贝显示，
+  适合分时图/仪表盘等数据密集界面；
+- **JPEG 效率**：`load_file` 支持解码期 1/2–1/8 缩放（缩略图省内存），
+  `encode`/`save_file` 可选 quality/subsample，`crop/rotate/flip` 走 PPA；
+- **大图背景**：默认 JPEG 解码一次 + `set_frame` 零拷贝；暗部色块明显时可选
+  `image.load_raw` + `tools/make_raw_background.py`（ffmpeg 解码 + Bayer 抖动）；
 - 海报式分层：全屏 JPEG、透明 ARGB 精灵、LVGL UI、局部 EAF；
 - **SD 运行期素材后备**：高清素材放 `/sdcard/panel-assets/<app_id>/`，包内保留
   同尺寸低清 fallback；无卡时 App 仍能启动；
@@ -403,18 +453,19 @@ Lua App，包括：
 - `/api/storage` 返回 FAT/SD 容量与挂载状态；`/api/sd-assets*` 只在
   `/sdcard/panel-assets` 下读写面板素材，`/api/sd-files*` 管理整张卡（Web 文件页
   的“内部存储 / SD 卡”切换），未插卡返回 503；
+- `/api/lua-failures` 返回最近失败的 Lua 任务（App 退出原因），供外部 AI/脚本调试；
+- `/api/apps*`（列表/刷新/启动/自检/停止）与 `/api/lua-tasks*` 支持无人工点击的
+  闭环验证；这些接口无鉴权，仅限可信 LAN。
 - `/ws/webim` 会话接口保留，IM/微信登录页依赖官方外部服务，未配置时只显示错误；
 - **没有登录鉴权**，只应在可信 LAN 使用；不要直接暴露到公网。SD 写接口同样
   只应在可信 LAN 使用。
 
-- **系统状态**：Wi-Fi/IP、FAT 用量、工作区、Agent/Lua/任务/能力/Lua 模块数量，可滚动。
-- **系统设置**：LLM 设置（本地 Agent 开关、接口、模型、Key、Lua 权限）与 IM 平台配置状态；基本显示/声音设置仍在主「设置」页，网络/搜索配置在 Web 管理端，避免重复。
-- **记忆管理**：长期记忆、灵魂、身份、用户信息四个文件，点开只读预览。
-- **在线聊天**：与本地 Agent 对话（与 Web 端共享会话/记忆）。
-- **定时任务**：`cap_scheduler` 计划列表，支持手动触发、启停、删除，下次触发倒计时。
-- **能力管理 / Lua 模块管理**：已注册的能力组与底层 Lua 模块列表。
-- **文件管理**：只读浏览 `/fatfs/claw/data` 与 `/system`，进目录、点文件查看；不提供新建/删除/运行入口。
-- 任务、定时、脚本、技能运行、测试定时等开发向入口已从面板移除；这些由 Agent 和 Web 管理端管理。
+- **在线聊天**（默认）：与本地 Agent 对话（与 Web 端共享会话/记忆）；OpenAI 兼容后端（DeepSeek 等）使用 SSE 流式回复，设备端临时气泡实时显示文字并按句提前播报；顶部会话名打开会话选择弹窗，可新建、切换、删除会话（每行右侧垃圾桶按钮，删除会清理历史）；消息区为微信式左右气泡，底部固定输入/发送栏。
+- **定时任务**：`cap_scheduler` 计划列表，支持手动触发、启停、删除和下次触发倒计时；新建通过对话/语音或 Web 管理端完成。
+- **工作区**：分段切换「记忆管理 / 文件管理」。记忆为四个 Agent 文件的只读预览；文件为 FAT/SD 只读浏览，支持目录、路径、刷新和 64 KB 文本预览。
+- **设置**：本地 Agent 开关与快速 LLM 配置（接口类型、Base URL、模型、Key）、允许小智运行 Lua、豆包语音 TTS；IM/微信登录等完整配置在 Web 管理端。
+- 左侧轨道底部固定显示 Agent 状态、Lua 权限和运行中任务数；系统状态、能力组、Lua 模块列表等只读/开发向页签已移除，分别由设备状态页、主设置页和 Web 管理端承担。
+- **豆包语音 TTS**：本地 Agent 最终回复可自动播报，Lua 可用 `claw.speak()`；`/api/tts/status|config|speak` 负责配置和测试。Claw → 设置 → 豆包语音 的音色行会打开分类选择弹窗（1.0 精选 + 2.0 通用/角色/客服/多语种/ICL，共 285 个 2.0 官方音色和 5 个 1.0 精选），也可选「自定义」手填；选择后自动匹配 1.0/2.0 资源 ID。
 
 语音用法（需先在 Claw → 设置里打开开关）：
 
@@ -462,7 +513,7 @@ end
 - **Lua HTTP 服务端**：`http_server` 的 `/lua/<app_id>/*`、`/api/lua/<app_id>/*` 已启用，由 App 的 `serve_forever()` 或非阻塞 `poll()` 分发（`CONFIG_APP_CLAW_LUA_MODULE_HTTP_SERVER=y`）。
 - `insecure=true` 需要 `CONFIG_ESP_TLS_INSECURE` + `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`（`sdkconfig.defaults` 已开）；证书默认用内置 bundle。
 - 限制：lwip 只返回单个 DNS 地址；IPv6 实际仅字面量可用（无 SLAAC）；无 HTTP keep-alive/MQTT 5。
-- 模块文档随种子写入 `builtin_lua_modules`（种子版本 28）；设计与 API 细节见
+- 模块文档随种子写入 `builtin_lua_modules`（种子版本 36）；设计与 API 细节见
   [`docs/claw.md`](docs/claw.md) 与
   [`skills/panel-app-design/references/networking.md`](skills/panel-app-design/references/networking.md)。
 

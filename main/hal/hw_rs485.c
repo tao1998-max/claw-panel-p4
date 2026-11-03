@@ -1,52 +1,52 @@
 #include <stdio.h>
-#include <string.h>
 
 #include "hw.h"
+#include "claw_hw_registry.h"
+#include "claw_port.h"
 #include "esp_log.h"
 #include "driver/uart.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 static const char *TAG = "hw.rs485";
 
 #define RS485_UART          UART_NUM_1
 #define RS485_BAUD          115200
-#define RS485_BUF_SIZE      1024
 
-static bool s_inited;
-static uint32_t s_rx_count;
-static uint32_t s_tx_count;
-
-static void rs485_task(void *arg)
+/*
+ * The board's RS485 transceiver turns the UART into a half-duplex bus and
+ * handles DE/RE direction automatically, so from the firmware's point of view
+ * it is a plain UART.
+ *
+ * Official ESP-Claw hardware model: the Lua `uart` module owns the port on
+ * demand (uart.new(1, 26, 27, 115200)) and releases it on close. This function
+ * therefore only probes the port once so the status page can report the
+ * wiring; it does not keep the driver installed.
+ */
+static void rs485_register_lua_resources(void)
 {
-    uint8_t buf[256];
+    char bus_key[CLAW_HW_KEY_SIZE];
+    char tx_key[CLAW_HW_KEY_SIZE];
+    char rx_key[CLAW_HW_KEY_SIZE];
+    const char *keys[] = {
+        claw_hw_key_uart_bus(bus_key, sizeof(bus_key), RS485_UART),
+        claw_hw_key_gpio(tx_key, sizeof(tx_key), PIN_RS485_TX),
+        claw_hw_key_gpio(rx_key, sizeof(rx_key), PIN_RS485_RX),
+    };
 
-    while (1) {
-        int n = uart_read_bytes(RS485_UART, buf, sizeof(buf), pdMS_TO_TICKS(50));
-        if (n <= 0) {
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        if (keys[i] == NULL) {
             continue;
         }
-        s_rx_count += n;
+        esp_err_t err = claw_port_add_hw_resource(keys[i], false);
 
-        if (CONFIG_TEMPLATE_RS485_ECHO) {
-            uart_write_bytes(RS485_UART, buf, n);
-            s_tx_count += n;
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "queue hw resource '%s' failed: %s", keys[i], esp_err_to_name(err));
         }
-
-        ESP_LOGI(TAG, "rx %d bytes: %.*s", n, n, (char *)buf);
     }
 }
 
 esp_err_t hw_rs485_init(void)
 {
     hw_status_t *st = &g_hw[HW_RS485];
-    st->enabled = true;
-
-    if (s_inited) {
-        st->ok = true;
-        return ESP_OK;
-    }
-
     const uart_config_t cfg = {
         .baud_rate = RS485_BAUD,
         .data_bits = UART_DATA_8_BITS,
@@ -56,23 +56,30 @@ esp_err_t hw_rs485_init(void)
         .source_clk = UART_SCLK_DEFAULT,
     };
 
-    esp_err_t err = uart_driver_install(RS485_UART, RS485_BUF_SIZE, RS485_BUF_SIZE, 0, NULL, 0);
-    if (err != ESP_OK) {
+    st->enabled = true;
+    rs485_register_lua_resources();
+
+    esp_err_t err = uart_driver_install(RS485_UART, 256, 0, 0, NULL, 0);
+    if (err == ESP_OK) {
+        err = uart_param_config(RS485_UART, &cfg);
+    }
+    if (err == ESP_OK) {
+        err = uart_set_pin(RS485_UART, PIN_RS485_TX, PIN_RS485_RX,
+                           UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    }
+    if (err == ESP_OK) {
+        st->ok = true;
+        snprintf(st->detail, sizeof(st->detail), "UART1 26/27 (Lua)");
+        ESP_LOGI(TAG, "rs485 ready: TX=%d RX=%d @%d; open with uart.new(1, %d, %d, %d)",
+                 PIN_RS485_TX, PIN_RS485_RX, RS485_BAUD,
+                 PIN_RS485_TX, PIN_RS485_RX, RS485_BAUD);
+    } else {
         st->ok = false;
-        snprintf(st->detail, sizeof(st->detail), "install err %d", err);
-        return err;
+        snprintf(st->detail, sizeof(st->detail), "probe: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "rs485 probe failed: %s", esp_err_to_name(err));
     }
 
-    ESP_ERROR_CHECK(uart_param_config(RS485_UART, &cfg));
-    ESP_ERROR_CHECK(uart_set_pin(RS485_UART, PIN_RS485_TX, PIN_RS485_RX,
-                                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-
-    s_inited = true;
-    st->ok = true;
-    snprintf(st->detail, sizeof(st->detail), "UART1 %d baud", RS485_BAUD);
-
-    xTaskCreate(rs485_task, "rs485", 4096, NULL, 6, NULL);
-
-    ESP_LOGI(TAG, "rs485 ready: TX=%d RX=%d @%d", PIN_RS485_TX, PIN_RS485_RX, RS485_BAUD);
-    return ESP_OK;
+    /* Release the port for the Lua `uart` module. */
+    uart_driver_delete(RS485_UART);
+    return err;
 }

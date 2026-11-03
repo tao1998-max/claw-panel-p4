@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "sdkconfig.h"
+#include "claw_hw_registry.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -18,6 +19,31 @@
 #include "freertos/task.h"
 
 #define CLAW_PORT_EXTRA_LUA_MODULES_MAX 4
+#define CLAW_PORT_EXTRA_HW_RESOURCES_MAX 8
+
+typedef struct {
+    char key[CLAW_HW_KEY_SIZE];
+    bool shared;
+} claw_port_extra_hw_resource_t;
+
+static claw_port_extra_hw_resource_t s_extra_hw_resources[CLAW_PORT_EXTRA_HW_RESOURCES_MAX];
+static size_t s_extra_hw_resource_count;
+
+esp_err_t claw_port_add_hw_resource(const char *key, bool shared)
+{
+    if (key == NULL || key[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_extra_hw_resource_count >= CLAW_PORT_EXTRA_HW_RESOURCES_MAX) {
+        return ESP_ERR_NO_MEM;
+    }
+    snprintf(s_extra_hw_resources[s_extra_hw_resource_count].key,
+             sizeof(s_extra_hw_resources[s_extra_hw_resource_count].key),
+             "%s", key);
+    s_extra_hw_resources[s_extra_hw_resource_count].shared = shared;
+    s_extra_hw_resource_count++;
+    return ESP_OK;
+}
 
 typedef struct {
     const char *name;
@@ -61,6 +87,7 @@ esp_err_t claw_port_add_lua_module(const char *name, lua_CFunction open_fn)
 #include "app_registry.h"
 #include "claw_agent.h"
 #include "claw_api.h"
+#include "claw_tts.h"
 #include "claw_cap.h"
 #include "claw_event_publisher.h"
 #include "claw_event_router.h"
@@ -314,12 +341,28 @@ esp_err_t claw_port_init(const char *sd_mount_point)
         ESP_LOGE(TAG, "claw_paths_set(SYSTEM) failed: %s", esp_err_to_name(err));
         return err;
     }
+    claw_tts_init();
     (void)claw_paths_set_space_provider(CLAW_PATH_DATA, space_provider, NULL);
 
     err = claw_hw_registry_create(&s_hw_registry);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "hw registry create failed: %s", esp_err_to_name(err));
         return err;
+    }
+
+    /* Board resources queued by main/hal before claw_port_init(). Official Lua
+     * drivers can only claim registered resources. */
+    for (size_t i = 0; i < s_extra_hw_resource_count; i++) {
+        const claw_hw_resource_config_t resource = {
+            .resource = s_extra_hw_resources[i].key,
+            .policy = s_extra_hw_resources[i].shared ? CLAW_HW_SHARED : CLAW_HW_EXCLUSIVE,
+        };
+        esp_err_t res_err = claw_hw_registry_register(s_hw_registry, &resource, 1);
+
+        if (res_err != ESP_OK) {
+            ESP_LOGW(TAG, "hw resource '%s' register failed: %s",
+                     s_extra_hw_resources[i].key, esp_err_to_name(res_err));
+        }
     }
 
     err = claw_cap_init();
@@ -554,6 +597,11 @@ esp_err_t claw_port_init(const char *sd_mount_point)
         err = app_registry_add_directory(sd_apps_root);
         if (err == ESP_OK) {
             err = claw_api_add_script_root(sd_apps_root);
+        }
+        if (err == ESP_OK) {
+            /* Expose the card to LVGL as drive S:, so lvgl.image/animimg/gif
+             * src paths can read SD assets. */
+            err = lua_module_lvgl_set_sd_root(sd_mount_point);
         }
         if (err == ESP_OK) {
             /* Fonts may live on the card too; lvgl.font_load() reads absolute

@@ -1,10 +1,11 @@
 /*
  * Epson RX8025T-UC RTC on the shared BSP I2C bus.
  *
- * The chip keeps local calendar time (BCD) on a backup battery. This driver
- * reads it at boot to seed the system clock and writes the system clock back
- * after SNTP so the two stay close. It is intentionally small: only the
- * calendar registers are used; alarm/timer outputs are left alone.
+ * The chip keeps UTC calendar time (BCD) on a backup battery. This driver
+ * reads it at boot to seed the system clock and writes UTC back after SNTP
+ * so the two stay close. Older firmware stored local time; a one-time NVS
+ * flag migrates the chip to UTC (see s_rtc_utc). It is intentionally small:
+ * only the calendar registers are used; alarm/timer outputs are left alone.
  */
 #include "hw.h"
 
@@ -17,6 +18,7 @@
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "nvs.h"
 
 #define RTC_I2C_ADDR       0x32
 #define RTC_I2C_HZ         100000
@@ -28,6 +30,34 @@
 static const char *TAG = "hw.rtc";
 static i2c_master_dev_handle_t s_rtc_dev;
 static esp_timer_handle_t s_sync_timer;
+
+/* The RX8025T is kept in UTC so the stored value does not depend on TZ/DST.
+ * Older firmware stored local time; a one-time NVS flag migrates the chip. */
+#define RTC_NVS_NAMESPACE "hw_rtc"
+#define RTC_NVS_UTC_KEY   "utc"
+static bool s_rtc_utc;
+
+static void rtc_load_utc_mode(void)
+{
+    nvs_handle_t handle;
+    uint8_t value = 0;
+    if (nvs_open(RTC_NVS_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
+        if (nvs_get_u8(handle, RTC_NVS_UTC_KEY, &value) == ESP_OK) {
+            s_rtc_utc = value != 0;
+        }
+        nvs_close(handle);
+    }
+}
+
+static void rtc_save_utc_mode(void)
+{
+    nvs_handle_t handle;
+    if (nvs_open(RTC_NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+        (void)nvs_set_u8(handle, RTC_NVS_UTC_KEY, s_rtc_utc ? 1 : 0);
+        (void)nvs_commit(handle);
+        nvs_close(handle);
+    }
+}
 
 static uint8_t bcd_to_bin(uint8_t value)
 {
@@ -147,6 +177,35 @@ static esp_err_t rtc_open(void)
     return i2c_master_bus_add_device(bus, &cfg, &s_rtc_dev);
 }
 
+static bool rtc_is_leap_year(int year)
+{
+    return (year % 4 == 0) && ((year % 100 != 0) || (year % 400 == 0));
+}
+
+/* ESP-IDF's newlib build does not expose timegm(). Convert a UTC struct tm
+ * without touching the process TZ, which is shared with the UI/SNTP tasks. */
+static time_t rtc_tm_to_utc_epoch(const struct tm *tm)
+{
+    static const int month_days[12] = {
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    };
+    int year = tm->tm_year + 1900;
+    int64_t days = 0;
+
+    for (int y = 1970; y < year; y++) {
+        days += rtc_is_leap_year(y) ? 366 : 365;
+    }
+    for (int m = 0; m < tm->tm_mon; m++) {
+        days += month_days[m];
+        if (m == 1 && rtc_is_leap_year(year)) {
+            days += 1;
+        }
+    }
+    days += tm->tm_mday - 1;
+    return (time_t)(days * 86400 + tm->tm_hour * 3600 +
+                    tm->tm_min * 60 + tm->tm_sec);
+}
+
 static esp_err_t rtc_read_epoch(time_t *out_epoch, struct tm *out_tm, uint8_t *out_flags)
 {
     uint8_t raw[7] = {0};
@@ -175,7 +234,7 @@ static esp_err_t rtc_read_epoch(time_t *out_epoch, struct tm *out_tm, uint8_t *o
     if (!rtc_decode_now(raw, &tm_now)) {
         return ESP_ERR_INVALID_RESPONSE;
     }
-    time_t epoch = mktime(&tm_now);
+    time_t epoch = s_rtc_utc ? rtc_tm_to_utc_epoch(&tm_now) : mktime(&tm_now);
     if (epoch <= (time_t)1600000000LL) {
         return ESP_ERR_INVALID_RESPONSE;
     }
@@ -249,6 +308,7 @@ esp_err_t hw_rtc_init(void)
     }
 
     rtc_start_periodic_sync();
+    rtc_load_utc_mode();
 
     err = rtc_read_epoch(&rtc_epoch, &tm_now, &flags);
     if (err != ESP_OK) {
@@ -257,9 +317,10 @@ esp_err_t hw_rtc_init(void)
         return err;
     }
 
-    ESP_LOGI(TAG, "RX8025T reads %04d-%02d-%02d %02d:%02d:%02d (flags=0x%02x)",
+    ESP_LOGI(TAG, "RX8025T reads %04d-%02d-%02d %02d:%02d:%02d (flags=0x%02x, %s)",
              tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
-             tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec, flags);
+             tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec, flags,
+             s_rtc_utc ? "UTC" : "legacy local");
 
     /* RX8025T is the boot-time source. Override the ESP-IDF RTC-retained
      * boot time as well, so a software reset does not bypass the external
@@ -269,9 +330,22 @@ esp_err_t hw_rtc_init(void)
         ESP_LOGE(TAG, "settimeofday from RX8025T failed");
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "system time seeded from RX8025T: %04d-%02d-%02d %02d:%02d:%02d",
+    char local_buf[32] = "(localtime unavailable)";
+    struct tm local_tm = {0};
+    if (localtime_r(&rtc_epoch, &local_tm) != NULL) {
+        strftime(local_buf, sizeof(local_buf), "%Y-%m-%d %H:%M:%S", &local_tm);
+    }
+    ESP_LOGI(TAG, "system time seeded from RX8025T: %04d-%02d-%02d %02d:%02d:%02d UTC (%s local)",
              tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
-             tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
+             tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec, local_buf);
+
+    if (!s_rtc_utc) {
+        /* One-time migration: the old firmware stored local time in the RTC.
+         * The system clock above is correct; rewrite the chip in UTC and mark
+         * it so later boots use timegm(). */
+        (void)hw_rtc_set_from_system();
+        ESP_LOGI(TAG, "RX8025T migrated from local to UTC storage");
+    }
     return ESP_OK;
 }
 
@@ -327,7 +401,7 @@ esp_err_t hw_rtc_set_from_system(void)
         return ESP_ERR_INVALID_STATE;
     }
     time_t seconds = tv.tv_sec;
-    if (!localtime_r(&seconds, &tm_now)) {
+    if (!gmtime_r(&seconds, &tm_now)) {
         return ESP_FAIL;
     }
 
@@ -348,9 +422,11 @@ esp_err_t hw_rtc_set_from_system(void)
             flags &= (uint8_t)~(RTC_FLAG_VLF | RTC_FLAG_VDET);
             (void)rtc_write(RTC_REG_FLAGS, &flags, 1);
         }
-        ESP_LOGI(TAG, "RX8025T updated from system: %04d-%02d-%02d %02d:%02d:%02d",
+        ESP_LOGI(TAG, "RX8025T updated from system (UTC): %04d-%02d-%02d %02d:%02d:%02d",
                  tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
                  tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
+        s_rtc_utc = true;
+        rtc_save_utc_mode();
     } else {
         ESP_LOGW(TAG, "write RX8025T failed: %s", esp_err_to_name(err));
     }

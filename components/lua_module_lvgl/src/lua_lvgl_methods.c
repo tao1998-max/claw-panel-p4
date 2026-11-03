@@ -44,6 +44,8 @@ static const luaL_Reg lua_lvgl_base_methods[] = {
     {"move_foreground", lua_lvgl_move_foreground},
     {"on", lua_lvgl_obj_on},
     {"off", lua_lvgl_obj_off},
+    {"set_property", lua_lvgl_obj_set_property},
+    {"get_property", lua_lvgl_obj_get_property},
     {"delete", lua_lvgl_delete},
     {"clean", lua_lvgl_clean},
     {NULL, NULL},
@@ -283,8 +285,56 @@ static const luaL_Reg lua_lvgl_eaf_methods[] = {
     {NULL, NULL},
 };
 
+#if LV_USE_ANIMIMG
+static const luaL_Reg lua_lvgl_animimg_methods[] = {
+    {"set_src", lua_lvgl_animimg_set_src},
+    {"start", lua_lvgl_animimg_start},
+    {"stop", lua_lvgl_animimg_stop},
+    {"set_duration", lua_lvgl_animimg_set_duration},
+    {"get_duration", lua_lvgl_animimg_get_duration},
+    {"set_repeat_count", lua_lvgl_animimg_set_repeat_count},
+    {"get_repeat_count", lua_lvgl_animimg_get_repeat_count},
+    {"get_src_count", lua_lvgl_animimg_get_src_count},
+    {NULL, NULL},
+};
+#endif
+
+#if LV_USE_GIF
+static const luaL_Reg lua_lvgl_gif_methods[] = {
+    {"set_src", lua_lvgl_gif_set_src},
+    {"restart", lua_lvgl_gif_restart},
+    {"pause", lua_lvgl_gif_pause},
+    {"resume", lua_lvgl_gif_resume},
+    {"is_loaded", lua_lvgl_gif_is_loaded},
+    {"set_loop_count", lua_lvgl_gif_set_loop_count},
+    {"get_loop_count", lua_lvgl_gif_get_loop_count},
+    {"get_frame_count", lua_lvgl_gif_get_frame_count},
+    {"get_current_frame", lua_lvgl_gif_get_current_frame},
+    {"set_auto_pause", lua_lvgl_gif_set_auto_pause},
+    {"get_size", lua_lvgl_gif_get_size},
+    {NULL, NULL},
+};
+#endif
+
+#if LV_USE_LOTTIE
+static const luaL_Reg lua_lvgl_lottie_methods[] = {
+    {"set_src", lua_lvgl_lottie_set_src},
+    {"set_src_data", lua_lvgl_lottie_set_src_data},
+    {"restart", lua_lvgl_lottie_restart},
+    {"pause", lua_lvgl_lottie_pause},
+    {"resume", lua_lvgl_lottie_resume},
+    {"is_loaded", lua_lvgl_lottie_is_loaded},
+    {"is_playing", lua_lvgl_lottie_is_playing},
+    {"get_duration", lua_lvgl_lottie_get_duration},
+    {"get_total_frames", lua_lvgl_lottie_get_total_frames},
+    {"get_time", lua_lvgl_lottie_get_time},
+    {NULL, NULL},
+};
+#endif
+
 static const luaL_Reg lua_lvgl_image_methods[] = {
     {"set_raw_rgb565", lua_lvgl_image_set_raw_rgb565},
+    {"set_frame", lua_lvgl_image_set_frame},
     {"set_raw_argb8888", lua_lvgl_image_set_raw_argb8888},
     {"set_rotation", lua_lvgl_image_set_rotation},
     {"set_pivot", lua_lvgl_image_set_pivot},
@@ -353,6 +403,15 @@ static const lua_lvgl_widget_descriptor_t s_widget_descriptors[] = {
     {LUA_LVGL_OBJ_WINDOW,      "lvgl.obj.window",      lua_lvgl_window_methods},
     {LUA_LVGL_OBJ_WINDOW_CHILD, "lvgl.obj.window_child", lua_lvgl_no_extra_methods},
     {LUA_LVGL_OBJ_EAF,         "lvgl.obj.eaf",         lua_lvgl_eaf_methods},
+#if LV_USE_LOTTIE
+    {LUA_LVGL_OBJ_LOTTIE,      "lvgl.obj.lottie",      lua_lvgl_lottie_methods},
+#endif
+#if LV_USE_ANIMIMG
+    {LUA_LVGL_OBJ_ANIMIMG,     "lvgl.obj.animimg",     lua_lvgl_animimg_methods},
+#endif
+#if LV_USE_GIF
+    {LUA_LVGL_OBJ_GIF,         "lvgl.obj.gif",         lua_lvgl_gif_methods},
+#endif
 };
 
 #define LUA_LVGL_WIDGET_DESCRIPTOR_COUNT \

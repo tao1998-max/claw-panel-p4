@@ -7,6 +7,42 @@
 
 #include "claw_paths.h"
 
+/* Built-in LVGL fonts that Lua styles may reference by name string, e.g.
+ * set_style({ font = "montserrat_32" }). Only sizes compiled into the
+ * firmware are accepted; the default LVGL font is Montserrat 14. */
+static const lv_font_t *lua_lvgl_builtin_font(const char *name)
+{
+    if (!name || !name[0]) {
+        return NULL;
+    }
+#if LV_FONT_MONTSERRAT_14
+    if (strcmp(name, "default") == 0 || strcmp(name, "montserrat_14") == 0) {
+        return &lv_font_montserrat_14;
+    }
+#endif
+#if LV_FONT_MONTSERRAT_20
+    if (strcmp(name, "montserrat_20") == 0) {
+        return &lv_font_montserrat_20;
+    }
+#endif
+#if LV_FONT_MONTSERRAT_24
+    if (strcmp(name, "montserrat_24") == 0) {
+        return &lv_font_montserrat_24;
+    }
+#endif
+#if LV_FONT_MONTSERRAT_32
+    if (strcmp(name, "montserrat_32") == 0) {
+        return &lv_font_montserrat_32;
+    }
+#endif
+#if LV_FONT_MONTSERRAT_48
+    if (strcmp(name, "montserrat_48") == 0) {
+        return &lv_font_montserrat_48;
+    }
+#endif
+    return NULL;
+}
+
 #if LV_USE_TINY_TTF
 
 static const char *TAG = "lua_lvgl_font";
@@ -148,16 +184,17 @@ static esp_err_t lua_lvgl_normalize_font_path(const char *path, char *out, size_
     return ESP_OK;
 }
 
-static esp_err_t lua_lvgl_to_vfs_path(const char *path, char *out, size_t out_size)
+static esp_err_t lua_lvgl_to_vfs_path(lv_fs_drv_t *drv, const char *path, char *out, size_t out_size)
 {
+    const char *root = (drv && drv->user_data) ? (const char *)drv->user_data : s_lvgl.data_root;
     const char *rel = lua_lvgl_skip_drive_prefix(path);
     int written;
 
-    ESP_RETURN_ON_FALSE(s_lvgl.data_root[0], ESP_ERR_INVALID_STATE, TAG, "data root is not configured");
+    ESP_RETURN_ON_FALSE(root && root[0], ESP_ERR_INVALID_STATE, TAG, "fs root is not configured");
     ESP_RETURN_ON_FALSE(rel && rel[0], ESP_ERR_INVALID_ARG, TAG, "fs path is empty");
-    ESP_RETURN_ON_FALSE(!lua_lvgl_path_has_parent_ref(rel), ESP_ERR_INVALID_ARG, TAG, "fs path escapes data root");
+    ESP_RETURN_ON_FALSE(!lua_lvgl_path_has_parent_ref(rel), ESP_ERR_INVALID_ARG, TAG, "fs path escapes root");
 
-    written = snprintf(out, out_size, "%s/%s", s_lvgl.data_root, rel);
+    written = snprintf(out, out_size, "%s/%s", root, rel);
     ESP_RETURN_ON_FALSE(written > 0 && (size_t)written < out_size, ESP_ERR_INVALID_SIZE, TAG, "vfs path too long");
     return ESP_OK;
 }
@@ -250,8 +287,9 @@ static esp_err_t lua_lvgl_read_font_data(const char *font_path, uint8_t **out_da
 
 static bool lua_lvgl_fs_ready_cb(lv_fs_drv_t *drv)
 {
-    (void)drv;
-    return s_lvgl.data_root[0] != '\0';
+    const char *root = (drv && drv->user_data) ? (const char *)drv->user_data : s_lvgl.data_root;
+
+    return root != NULL && root[0] != '\0';
 }
 
 static void *lua_lvgl_fs_open_cb(lv_fs_drv_t *drv, const char *path, lv_fs_mode_t mode)
@@ -259,8 +297,7 @@ static void *lua_lvgl_fs_open_cb(lv_fs_drv_t *drv, const char *path, lv_fs_mode_
     char vfs_path[LUA_MODULE_LVGL_PATH_MAX];
     const char *flags = NULL;
 
-    (void)drv;
-    if (lua_lvgl_to_vfs_path(path, vfs_path, sizeof(vfs_path)) != ESP_OK) {
+    if (lua_lvgl_to_vfs_path(drv, path, vfs_path, sizeof(vfs_path)) != ESP_OK) {
         return NULL;
     }
     if (mode == LV_FS_MODE_RD) {
@@ -351,6 +388,38 @@ esp_err_t lua_lvgl_set_data_root(const char *data_root)
     return ESP_OK;
 }
 
+esp_err_t lua_lvgl_set_sd_root(const char *sd_root)
+{
+    int written;
+
+    if (!sd_root || !sd_root[0]) {
+        s_lvgl.sd_root[0] = '\0';
+        return ESP_OK;
+    }
+    written = snprintf(s_lvgl.sd_root, sizeof(s_lvgl.sd_root), "%s", sd_root);
+    ESP_RETURN_ON_FALSE(written > 0 && (size_t)written < sizeof(s_lvgl.sd_root),
+                        ESP_ERR_INVALID_SIZE,
+                        TAG,
+                        "sd root too long");
+    while (strlen(s_lvgl.sd_root) > 1 && s_lvgl.sd_root[strlen(s_lvgl.sd_root) - 1] == '/') {
+        s_lvgl.sd_root[strlen(s_lvgl.sd_root) - 1] = '\0';
+    }
+    return ESP_OK;
+}
+
+static void lua_lvgl_fs_drv_init(lv_fs_drv_t *drv, char letter, char *root)
+{
+    lv_fs_drv_init(drv);
+    drv->letter = letter;
+    drv->user_data = root;
+    drv->ready_cb = lua_lvgl_fs_ready_cb;
+    drv->open_cb = lua_lvgl_fs_open_cb;
+    drv->close_cb = lua_lvgl_fs_close_cb;
+    drv->read_cb = lua_lvgl_fs_read_cb;
+    drv->seek_cb = lua_lvgl_fs_seek_cb;
+    drv->tell_cb = lua_lvgl_fs_tell_cb;
+}
+
 esp_err_t lua_lvgl_register_fs_locked(void)
 {
     lv_fs_drv_t *existing;
@@ -369,16 +438,21 @@ esp_err_t lua_lvgl_register_fs_locked(void)
     existing = lv_fs_get_drv(LUA_MODULE_LVGL_FS_LETTER);
     ESP_RETURN_ON_FALSE(existing == NULL, ESP_ERR_INVALID_STATE, TAG, "LVGL fs letter already in use");
 
-    lv_fs_drv_init(&s_lvgl.fs_drv);
-    s_lvgl.fs_drv.letter = LUA_MODULE_LVGL_FS_LETTER;
-    s_lvgl.fs_drv.ready_cb = lua_lvgl_fs_ready_cb;
-    s_lvgl.fs_drv.open_cb = lua_lvgl_fs_open_cb;
-    s_lvgl.fs_drv.close_cb = lua_lvgl_fs_close_cb;
-    s_lvgl.fs_drv.read_cb = lua_lvgl_fs_read_cb;
-    s_lvgl.fs_drv.seek_cb = lua_lvgl_fs_seek_cb;
-    s_lvgl.fs_drv.tell_cb = lua_lvgl_fs_tell_cb;
+    lua_lvgl_fs_drv_init(&s_lvgl.fs_drv, LUA_MODULE_LVGL_FS_LETTER, s_lvgl.data_root);
     lv_fs_drv_register(&s_lvgl.fs_drv);
     s_lvgl.fs_registered = true;
+
+    /* Optional SD drive: S:/<path> resolves to <sd_root>/<path>. */
+    if (s_lvgl.sd_root[0]) {
+        if (lv_fs_get_drv(LUA_MODULE_LVGL_SD_FS_LETTER) == NULL) {
+            lua_lvgl_fs_drv_init(&s_lvgl.sd_fs_drv, LUA_MODULE_LVGL_SD_FS_LETTER, s_lvgl.sd_root);
+            lv_fs_drv_register(&s_lvgl.sd_fs_drv);
+            s_lvgl.sd_fs_registered = true;
+        } else {
+            ESP_LOGW(TAG, "LVGL fs letter %c already in use; SD drive not registered",
+                     LUA_MODULE_LVGL_SD_FS_LETTER);
+        }
+    }
     return ESP_OK;
 }
 
@@ -691,13 +765,40 @@ void lua_lvgl_apply_font_style_field(lua_State *L, int index, lv_obj_t *obj)
     lua_getfield(L, index, "font");
     if (lua_isnil(L, -1)) {
         lua_pop(L, 1);
+        /* LVGL names this style property text_font; accept it as an alias. */
+        lua_getfield(L, index, "text_font");
+        if (lua_isnil(L, -1)) {
+            lua_pop(L, 1);
+            return;
+        }
+    }
+    if (lua_type(L, -1) == LUA_TSTRING) {
+        const char *name = lua_tostring(L, -1);
+        const lv_font_t *builtin = lua_lvgl_builtin_font(name);
+
+        if (!builtin) {
+            /* Style application runs under the LVGL lock; raising here would
+             * longjmp out of the lock and wedge the caller. */
+            ESP_LOGW(TAG, "ignoring unknown built-in font '%s' "
+                          "(built-in: montserrat_14/20/24/32/48)", name);
+            lua_pop(L, 1);
+            return;
+        }
+        lv_obj_set_style_text_font(obj, (lv_font_t *)builtin, 0);
+        lua_pop(L, 1);
         return;
     }
-    font_ud = lua_lvgl_check_font(L, -1);
+    font_ud = (lua_lvgl_font_ud_t *)luaL_testudata(L, -1, LUA_LVGL_FONT_MT);
+    if (!font_ud) {
+        ESP_LOGW(TAG, "ignoring style font: expected a built-in name or lvgl.font_load() object");
+        lua_pop(L, 1);
+        return;
+    }
     font = lua_lvgl_validate_font_locked(font_ud, &font_error);
     if (!font) {
+        ESP_LOGW(TAG, "ignoring style font: %s", font_error ? font_error : "invalid font");
         lua_pop(L, 1);
-        luaL_error(L, "%s", font_error);
+        return;
     }
     lv_obj_set_style_text_font(obj, font, 0);
     lua_pop(L, 1);
@@ -778,9 +879,30 @@ lv_font_t *lua_lvgl_validate_font_locked(const lua_lvgl_font_ud_t *ud, const cha
 
 void lua_lvgl_apply_font_style_field(lua_State *L, int index, lv_obj_t *obj)
 {
-    (void)L;
-    (void)index;
-    (void)obj;
+    const char *name;
+    const lv_font_t *font;
+
+    lua_getfield(L, index, "font");
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        lua_getfield(L, index, "text_font");
+        if (lua_isnil(L, -1)) {
+            lua_pop(L, 1);
+            return;
+        }
+    }
+    if (lua_type(L, -1) != LUA_TSTRING) {
+        lua_pop(L, 1);
+        return;
+    }
+    name = lua_tostring(L, -1);
+    font = lua_lvgl_builtin_font(name);
+    if (!font) {
+        lua_pop(L, 1);
+        return;
+    }
+    lv_obj_set_style_text_font(obj, (lv_font_t *)font, 0);
+    lua_pop(L, 1);
 }
 
 static int lua_lvgl_font_load_disabled(lua_State *L)

@@ -1,5 +1,6 @@
 #include "ai_audio.h"
 #include "ai_audio_internal.h"
+#include "ai.h"
 
 #include <algorithm>
 #include <cmath>
@@ -81,6 +82,9 @@ esp_err_t ai_audio_init(void)
     s_volume = clamp_volume(settings_get()->volume);
     s_codec->SetInputGain((float)CONFIG_TEMPLATE_XIAOZHI_MIC_GAIN_DB);
     s_codec->SetOutputVolume(s_volume);
+    /* Open the codec and enable the speaker PA once, at boot. Doing this on
+     * the first TTS/voice PCM causes a backlight/power flash on this panel. */
+    s_codec->EnableOutput(true);
 
     ESP_LOGI(TAG, "ES8311 16 kHz duplex ready, volume=%d gain=%d dB",
              s_volume, CONFIG_TEMPLATE_XIAOZHI_MIC_GAIN_DB);
@@ -249,6 +253,45 @@ void ai_audio_set_mute(bool muted)
 bool ai_audio_is_muted(void)
 {
     return s_muted;
+}
+
+static bool s_exclusive_active;
+
+bool ai_audio_exclusive_begin(int sample_rate, int channels)
+{
+    if (s_codec == nullptr || sample_rate <= 0 || channels != 2 || s_exclusive_active) {
+        return false;
+    }
+    if (ai_is_busy()) {
+        return false;
+    }
+    if (!ai_audio_pause_for_exclusive()) {
+        return false;
+    }
+    if (!s_codec->BeginExclusiveOutput(sample_rate, channels)) {
+        ai_audio_resume_after_exclusive();
+        return false;
+    }
+    s_exclusive_active = true;
+    return true;
+}
+
+bool ai_audio_exclusive_write(const int16_t *stereo_pcm, int frames)
+{
+    return s_exclusive_active && stereo_pcm != nullptr && frames > 0 &&
+           s_codec != nullptr && s_codec->ExclusiveWrite(stereo_pcm, frames) > 0;
+}
+
+void ai_audio_exclusive_end(void)
+{
+    if (!s_exclusive_active) {
+        return;
+    }
+    s_exclusive_active = false;
+    if (s_codec != nullptr) {
+        s_codec->EndExclusiveOutput();
+    }
+    ai_audio_resume_after_exclusive();
 }
 
 static void play_tones(const float *freqs, const int *durations, int count, int amplitude)

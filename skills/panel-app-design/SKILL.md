@@ -1,6 +1,6 @@
 ---
 name: panel-app-design
-description: Design, validate, and deliver LVGL Lua apps for the 1024x600 ESP32-P4 panel. Use when creating or redesigning a launcher App, including Chinese UI, poster-style layered visuals, SD-card or FAT app packages, SD fallback, networking (TCP/UDP/HTTP, MQTT, WebSocket, Lua HTTP routes), and Web upload. Do not use for firmware/native drivers, device-side ESP-Claw skills, or generic Lua scripts.
+description: Design, validate, and deliver LVGL Lua apps for the 1024x600 ESP32-P4 panel. Use when creating or redesigning a launcher App, including Chinese UI, text input and layout, poster-style layered visuals, spoken TTS feedback via claw.speak, SD-card or FAT app packages, SD fallback, serial/RS485 I/O (UART1), networking (TCP/UDP/HTTP, MQTT, WebSocket, Lua HTTP routes), and Web upload. Do not use for firmware/native drivers, device-side ESP-Claw skills, or generic Lua scripts.
 ---
 
 # Panel App Design
@@ -17,7 +17,10 @@ Use this skill when the task is a **launcher App** for this panel:
 
 - a new App, a redesign, or a visual/game-like screen;
 - Chinese UI with a bundled TTF subset;
+- text input (`textarea` + `lvgl.keyboard`), flex/grid layout, scrolling;
 - images, sprites, animations, or audio;
+- spoken feedback with `claw.speak()` (Doubao TTS) — explicit, blocking, and
+  independent of the Agent auto-speak switch;
 - FAT or SD package plus optional SD assets and fallback;
 - validation and LAN upload;
 - networking: TCP/UDP/DNS/HTTP clients, MQTT, WebSocket, and Lua HTTP routes.
@@ -34,7 +37,11 @@ or `lua_run_script`; use a local editor and the Web API instead.
 | FAT package | `/fatfs/claw/data/apps/<id>/` | `launcher.json`, `scripts/*.lua`, TTF subset, low-quality fallback images, tiny SFX | Target <=300 KiB; warn >512 KiB; hard-fail >1 MiB unless explicitly allowed; scanned first and overrides an SD package with the same `id` |
 | SD package (optional) | `/sdcard/apps/<id>/` | Full package: `launcher.json`, scripts, images, SFX, TTF | Launched in place, read-only; card inserted before boot; restart to rescan; upload limit 64 MiB, no FAT budget |
 | SD library (optional) | `/sdcard/panel-assets/<id>/` | high-res JPEG, raw RGB565/ARGB8888, EAF, extra OGG | Loaded only when present; app must work without it |
-| Never on SD | — | LVGL `image.src`/`eaf.src` resources | Those resolve against the FAT workspace only; use `image.load_file()` / EAF `src_data` for SD |
+| SD via LVGL | — | LVGL `src` resources | `S:/<path>` resolves to `/sdcard/<path>` (card must be mounted); `D:/` stays FAT. Keep boot-critical assets on FAT with a fallback. |
+
+`lvgl.lottie{src=...}` is different: ThorVG opens ESP-IDF VFS paths, so it uses
+an absolute `/sdcard/...` path (or `src_data`). Other LVGL file sources use
+`S:/...`.
 
 `lvgl.font_load()` accepts an absolute `/sdcard/...` path in this firmware
 build, so an SD package may keep its TTF inside the package. On older firmware
@@ -53,12 +60,20 @@ Important consequences:
 - SD is mounted once at boot (no hot-plug). Insert the card before power-on.
 - `max_files=5` on the SD volume: keep one full-screen image at a time and
   release `image.frame`/converted views immediately.
-- There is no runtime image scaling API. The SD image and its FAT fallback must
-  have the **same width and height**; only quality changes.
-- FAT is tight (about 1.4 MiB free on the reference device). Do not put
-  high-res art or EAF in the package.
-- `image.load_file()` is baseline JPEG only (<=4 MiB, <=1920x1080). Source
-  PNG/WebP/GIF must be converted offline.
+- Runtime scaling exists (`image.resize()`, and `image.load_file(path,
+  {max_width=..., max_height=...})` decodes JPEG at a 1/2..1/8 stage), but it
+  costs time and memory. Keep the FAT fallback at the displayed size; use the
+  SD copy for quality.
+- FAT is tight (about 1.7 MiB free on the reference device with the AI
+  font/model and workspace installed). Do not put high-res art or EAF in the
+  package.
+- The `image` module's `load_file()` is baseline JPEG only (<=4 MiB,
+  <=1920x1080); that pipeline needs PNG/WebP/GIF converted offline.
+  `image.encode`/`save_file` accept `quality` + `subsample`; `crop/rotate/flip`
+  use PPA.
+- LVGL file sources are different: `lvgl.image{src=...}`, `lvgl.animimg`,
+  `lvgl.gif` and `lvgl.eaf` decode/read PNG/JPEG/GIF from `D:/...`
+  (`/fatfs/claw/data`) or `S:/...` (`/sdcard`, card required).
 - SD file names should be ASCII (`img/bg.jpg`, `sfx/click.ogg`); the card is
   formatted CP936 while Web/scripts use UTF-8.
 
@@ -71,12 +86,18 @@ Important consequences:
    - Yes: put a same-size low-quality fallback in `assets/`; SD is an upgrade.
    - No: SD-only is fine.
 3. **What kind of art?**
-   - full-screen scene -> 1024x600 baseline JPEG;
+   - full-screen scene -> 1024x600 JPEG (q45-55 in the package, q85-92 on SD);
+     optional raw RGB565+dither only if dark chroma blocks are visible;
    - transparent character/sigil -> raw ARGB8888 (crop to its bounding box);
    - small opaque rectangle -> JPEG;
-   - fire/glow/loop -> pre-converted EAF, never GIF at runtime.
+   - fire/glow/loop -> pre-converted EAF; small vector loops may use
+     `lvgl.lottie`, simple frame sequences `lvgl.animimg`, and short GIFs
+     `lvgl.gif`. GIF decoding is CPU-heavy, so avoid full-screen/long loops;
+     see `references/lvgl-lua-api.md`.
 4. **Chinese text?** Collect every visible character, build a TTF subset, then
-   check coverage. Never rely on the device's chat font.
+   check coverage. Never rely on the device's chat font. The subset is a static
+   glyph set: rebuild and re-upload the TTF whenever copy changes (a
+   `main.lua`-only upload leaves new characters as tofu).
 5. **Which volume?** FAT when the App must start without a card (FAT is scanned
    first and overrides a duplicate id on SD); SD when the package is large or
    FAT is tight — with no card inserted before boot, SD Apps are simply absent.
@@ -103,12 +124,17 @@ type scale, states, and anti-template checklist.
 
 Most "game-like" screens are offline art plus a thin runtime composition:
 
-- **L0** full-screen background: 1024x600 JPEG, q85-92 on SD, q45-55 fallback.
+- **L0** full-screen background: 1024x600 JPEG (q85-92 on SD, q45-55 in the
+  package), decoded once and shown via `set_frame`. If a dark gradient shows
+  visible chroma blocks/banding, an optional raw RGB565 + Bayer dither path is
+  available (`make_raw_background.py` + `image.load_raw`); it is 1.2 MiB and
+  SD-only, with the JPEG kept as fallback.
 - **L1** transparent sprite/title: PNG -> raw ARGB8888 (`B,G,R,A`); crop to the
   sprite rectangle, not the whole screen.
 - **L2** LVGL UI: labels, buttons, status chips, hit areas; text uses the FAT
   TTF subset.
-- **L3** local EAF loop for fire/embers/glow; do not animate the full screen.
+- **L3** local EAF, Lottie, `animimg` or short GIF loop for fire/embers/glow;
+  do not animate the full screen.
 - **Poster logic**: title/big logo as image, small UI as text, one accent.
   A full-screen RGB565 frame is 1.23 MiB and ARGB8888 is 2.46 MiB; keep only one
   full-screen bitmap alive and avoid full-screen per-frame uploads.
@@ -123,6 +149,7 @@ See [`references/visual-layering.md`](references/visual-layering.md).
 ├── scripts/
 │   └── main.lua           # <=64 KiB
 ├── assets/
+│   ├── icon.jpg           # 96x96 baseline JPEG for the home grid
 │   ├── ui_cn.ttf          # bundled CJK subset
 │   ├── img/bg_fallback.jpg
 │   └── sfx/click.ogg
@@ -137,6 +164,8 @@ Minimal `launcher.json`:
   "id": "my_app",
   "display_name": "我的应用",
   "entry": "scripts/main.lua",
+  "version": "1.0.0",
+  "icon": "assets/icon.jpg",
   "args": {},
   "order": 10,
   "visible": true
@@ -144,8 +173,12 @@ Minimal `launcher.json`:
 ```
 
 `id` must match the deployed directory name and use `[A-Za-z0-9_-]`, 1-63
-characters. The current home page does not render `icon` and ignores
-`order`/`visible`; do not spend FAT space on an icon.
+characters. The home page is a six-column phone-style grid: each tile shows
+`icon`, `display_name` and `version`. Ship `icon` as a package-relative
+**96x96 baseline JPEG** (`assets/icon.jpg`, ~2 KB; no alpha, one flat glyph —
+`scripts/make_app_icons.py` renders one from simple shapes). A missing icon
+still works: the tile falls back to a gradient with the first character of the
+name. `order`/`visible` are still ignored.
 
 `sd_manifest.json` (read only by tooling):
 
@@ -222,22 +255,34 @@ lvgl.deinit()
 ```
 
 For ARGB sprites, read the file with `io.open(path, "rb")`, require exactly
-`w*h*4` bytes, then call `set_raw_argb8888(w, h, data)`. For EAF, read the bytes
-and pass `src_data` to `lvgl.eaf`; never pass a `/sdcard` path as `src`.
+`w*h*4` bytes, then call `set_raw_argb8888(w, h, data)`. For EAF, either read
+the bytes and pass `src_data`, or use an LVGL FS path (`D:/...` or `S:/...`).
+
+For Lottie, `lvgl.lottie{src = "/sdcard/..."}` is allowed (ThorVG uses
+`fopen`), or pass the JSON as `src_data`. Keep it small: each instance costs
+`w*h*4` bytes of PSRAM and renders in software.
 
 ## Validate and deliver
 
 From the skill directory (or with the scripts on `PATH`):
 
 ```bash
+python scripts/check_lua_pitfalls.py <pkg>/scripts --strict
 python scripts/validate_app.py --app-dir <pkg> --remote-id <id> --sd-dir <staging>
 python scripts/check_font_coverage.py --ttf <pkg>/assets/ui_cn.ttf --lua <pkg>/scripts/main.lua
 python scripts/prepare_sd_assets.py --spec <sd_plan.json>
+python scripts/make_raw_background.py --input bg.jpg --output bg.rgb565 --width 1024 --height 600
 python scripts/probe_device.py --host http://<device-ip>
-python scripts/upload_app.py --host http://<device-ip> --app-dir <pkg> --restart
-python scripts/upload_app.py --host http://<device-ip> --app-dir <pkg> --volume sd --restart
+python scripts/upload_app.py --host http://<device-ip> --app-dir <pkg>
+python scripts/upload_app.py --host http://<device-ip> --app-dir <pkg> --volume sd
+python scripts/run_app.py --host http://<device-ip> --app-id <id> --duration 3 --refresh
 python scripts/upload_sd_assets.py --host http://<device-ip> --sd-dir <staging>
 ```
+
+`check_lua_pitfalls.py` is a dependency-free static pass over the App Lua: it
+rejects Lua keywords used as method names (`u:local()`), `:on("click")`, and
+warns about float coordinates (`y = h / 2`) and `and/or` truncating multiple
+return values — all of which make an App exit immediately.
 
 `upload_app.py` walks the package, creates directories, uploads assets/scripts,
 and writes `launcher.json` last. It never uploads `sd_manifest.json`.
@@ -245,9 +290,18 @@ and writes `launcher.json` last. It never uploads `sd_manifest.json`.
 `/api/files`; `--volume sd` deploys to `/sdcard/apps/<id>/` through
 `/api/sd-files` and skips the FAT budget check (SD upload limit is 64 MiB with
 a 256 KiB reserve). Each volume has its own duplicate-id check. The launcher
-scans only at boot: pass `--restart` (or use the device Agent's `publish_app`,
-which external platforms do not have and which targets FAT). SD asset changes
-need only an App relaunch.
+scans at boot, so `upload_app.py` calls `POST /api/apps/refresh` afterwards —
+no reboot needed (`--restart` remains for firmware without that endpoint; the
+device Agent's `publish_app` also reloads, but it targets FAT and external
+platforms do not have it). SD asset changes need only an App relaunch.
+
+Close the loop without touching the panel: `POST /api/apps/refresh` rescans the
+app roots, `POST /api/apps/<id>/test?duration_ms=3000` launches the App, lets it
+run, stops it, and reports `running` (no crash), `finished`, or `failed` with
+the exact `path:line: reason`; `run_app.py` wraps that in one command. The same
+text is available later from `probe_device.py` / `GET /api/lua-failures` (no
+serial console needed). Fix the reported line and re-upload the script (no
+restart required for script changes).
 
 If a whole-card endpoint is missing, use the manual route: power off, copy
 `sd/panel-assets/<id>/` (assets) or the package to `/sdcard/apps/<id>/` (SD
@@ -259,17 +313,42 @@ save a card reader.
 - `label` has no `text_align`; center with the object's `align="center"`.
 - Never call `font:delete()` before `lvgl.deinit()`; let deinit release fonts
   and widgets together. Deleting early causes an instruction-access fault.
+- Every `lvgl.font_load()` reads the whole TTF into PSRAM and keeps it: N sizes
+  means N copies. Keep subsets around 100-150 KiB (ceiling 200 KiB) and load
+  only the sizes the UI uses; a "full CJK" TTF can cost several MiB. After any
+  Chinese copy change, rebuild the subset and re-upload the TTF.
+- The display service overlays a 64x40 exit button at the top-right of every
+  Lua App (`lv_layer_top`). Keep counters, status text and pressable controls
+  out of that corner; tapping it stops the App and returns to the launcher —
+  the log says `exit gesture requested Lua job stop`, it is not a reboot.
+- `uart.new()` raises when the port is busy or the pins are claimed. Open it
+  once through `pcall`, poll `read()` non-blocking in the UI loop (1 KiB RX
+  buffer, 20-40 ms cadence at 115200), and `close()` on stop/exit. See
+  `references/serial.md`.
 - Do not screenshot, read canvas pixels, or probe glyph grids; there is no
   screenshot API and probing can hold the LVGL lock. Validate statically and
   ask the user for a visual check.
 - Do not run two UI Apps at once; the display session is exclusive.
-- `lvgl.image{src=...}` and `lvgl.eaf{src=...}` cannot read SD; use the raw
-  setters / `src_data` instead. `lvgl.font_load("/sdcard/...")` **is** supported
+- Only resources registered in the ESP-Claw hardware registry are claimable.
+  This firmware registers UART1 (`uart_bus:1`, GPIO26/27) for RS485; general
+  `gpio`/`adc`/`i2c`/`ledc`/`mcpwm`/`pcnt`/`rmt` pins are not registered and
+  raise resource errors. Use `uart` for RS485; direction is automatic.
+- LVGL `src` paths read SD through the `S:` drive, e.g.
+  `lvgl.image{src="S:/panel-assets/<id>/bg.png"}`. `D:/` remains the FAT
+  workspace. `lvgl.lottie{src=...}` uses an absolute `/sdcard/...` path instead
+  (ThorVG bypasses LVGL's FS). `lvgl.font_load("/sdcard/...")` **is** supported
   on this firmware build (extra font root registered at boot).
 - `lvgl.create_screen()` only builds a screen — call `scr:load()` after adding
   the widgets and before the event loop, or the App shows a blank background
   while its script runs normally.
 - Do not busy-wait; use `system.millis()` and `lvgl.process_events`.
+- Do not build large images as Lua strings. Use `image.new()` + `fill_rect` /
+  `line` / `blit`, and display with `img:set_frame(canvas)` (zero copy).
+- `img:set_frame()` is the default display path (zero copy). If a dark JPEG
+  shows colour blocks/banding after decoding, an optional raw RGB565+dither
+  path exists (`make_raw_background.py` + `image.load_raw`); keep the JPEG as
+  fallback. On the reference weather App the raw difference was not visible, so
+  JPEG + `set_frame` is the default.
 - App Lua can read SD and use `io`/`os`; only install trusted packages.
 - The Web API has no authentication. Keep it on a trusted LAN.
 - `claw-flash`/factory reset clears runtime Apps on FAT; SD packages and SD
@@ -282,16 +361,23 @@ save a card reader.
 - [`references/design-system.md`](references/design-system.md) - grid, tokens, states, anti-template checks.
 - [`references/visual-layering.md`](references/visual-layering.md) - L0-L3 art pipeline and memory.
 - [`references/lvgl-lua-api.md`](references/lvgl-lua-api.md) - supported APIs and limits.
+- [`references/audio.md`](references/audio.md) - output/input/player/recorder/analyzer, OGG paths, native-rate MP3 exclusive playback, shared-AudioService limits, and `claw.speak()` Doubao TTS.
 - [`references/networking.md`](references/networking.md) - net/mqtt/websocket modules, budgets, `next_event` loops, LAN HTTP routes.
+- [`references/serial.md`](references/serial.md) - RS485/UART1 pins, `uart` module, in-app polling/lifecycle and request/response patterns.
 - [`references/fonts-cn.md`](references/fonts-cn.md) - Noto subset and coverage.
 - [`references/troubleshooting.md`](references/troubleshooting.md) - symptom-to-check table.
 
-Examples live in `assets/examples/`: `countdown` is FAT-only; `sd_fallback` is
-a poster-style App with an SD upgrade and same-size FAT fallback. Either package
-can be redeployed unchanged with `upload_app.py --volume sd`.
+Examples live in `assets/examples/`: `countdown` is FAT-only; `mqtt_panel`
+shows MQTT heartbeat/commands; `network_radio` streams MP3 radio and draws a
+live canvas spectrum; `anim_lab` pairs a 160x160 Lottie loader with an animimg
+frame sequence (SD upgrade + package fallback); `sd_fallback` is a poster-style
+App with an SD upgrade and same-size FAT fallback. Any package can be
+redeployed unchanged with `upload_app.py --volume sd`.
 
 ## Evals
 
-`evals/evals.json` contains three real prompts: a Chinese countdown App, a
-poster-style SD-backed screen, and a missing-SD/corrupt-asset fallback. Check
-the produced package with the scripts above rather than screenshots.
+`evals/evals.json` contains five real prompts: a Chinese countdown App, a
+poster-style SD-backed screen, a missing-SD/corrupt-asset fallback, an
+RS485/UART serial terminal, and an MQTT networking App. Check the produced
+package with the scripts above rather than screenshots.
+`evals/trigger_queries.json` holds the should/should-not trigger boundary set.

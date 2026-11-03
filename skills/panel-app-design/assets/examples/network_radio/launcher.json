@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "id": "network_radio",
+  "display_name": "网络电台",
+  "entry": "scripts/main.lua",
+  "version": "1.0.0",
+  "icon": "assets/icon.jpg",
+  "order": 20,
+  "visible": true
+}

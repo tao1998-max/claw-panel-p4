@@ -36,6 +36,8 @@ public:
 
     esp_err_t Start();
     void Stop();
+    bool PauseAudio(uint32_t timeout_ms);
+    void ResumeAudio();
 
     ai_state_t State() const { return state_.load(); }
     bool IsBusy() const;
@@ -85,6 +87,7 @@ private:
 
     std::unique_ptr<AudioService> audio_service_;
     std::unique_ptr<WebsocketProtocol> protocol_;
+    bool paused_audio_ = false;
     AiOta ota_;
 
     std::atomic<ai_state_t> state_{AI_STATE_DISABLED};

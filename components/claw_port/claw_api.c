@@ -1160,6 +1160,21 @@ esp_err_t claw_api_agent_status_json(char *out, size_t out_size)
     return claw_agent_status_json(out, out_size);
 }
 
+esp_err_t claw_api_agent_stream_snapshot(const char *session_id, char *out,
+                                         size_t out_size, uint32_t *out_rev,
+                                         bool *out_active)
+{
+    if (!out || out_size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    out[0] = '\0';
+    if (!claw_port_is_ready()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return claw_agent_stream_snapshot(session_id, out, out_size, out_rev,
+                                      out_active);
+}
+
 esp_err_t claw_api_agent_last_reply(char *out, size_t out_size)
 {
     if (!out || out_size == 0) {

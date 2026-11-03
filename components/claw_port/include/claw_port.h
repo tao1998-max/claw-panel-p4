@@ -28,6 +28,20 @@ extern "C" {
 esp_err_t claw_port_add_lua_module(const char *name, lua_CFunction open_fn);
 
 /**
+ * @brief Queue a board hardware resource for the ESP-Claw hardware registry.
+ *
+ * Official Lua hardware drivers (uart, gpio, i2c, ...) claim resources such as
+ * "uart_bus:1" or "gpio:26" through claw_hw_registry. Only registered
+ * resources can be claimed. Queue them before claw_port_init(); they are
+ * registered when the registry is created.
+ *
+ * Build the key with claw_hw_key_uart_bus() / claw_hw_key_gpio() / etc.
+ * Set shared=true for resources that several drivers may use concurrently;
+ * false reserves an exclusive resource (one Lua object at a time).
+ */
+esp_err_t claw_port_add_hw_resource(const char *key, bool shared);
+
+/**
  * @brief Start the Claw runtime.
  *
  * Called from app_start() before ai_start(). When CONFIG_TEMPLATE_ENABLE_CLAW

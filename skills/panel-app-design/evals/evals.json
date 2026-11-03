@@ -22,7 +22,8 @@
         "sd_manifest entries have same-size fallbacks and valid kinds",
         "package is <=300 KiB target or has a warning",
         "image decoding uses image.load_file + set_raw_rgb565, not lvgl.image src",
-        "no lvgl.image src or lvgl.eaf src resource points at SD; heavy art goes through panel-assets and load_file",
+        "heavy art goes through panel-assets + image.load_file/set_frame; any LVGL file source uses D:/ or S:/ (Lottie is the only absolute /sdcard/... exception)",
+        "any L3 animation is a small local lottie/animimg/gif region (lottie src absolute /sdcard/... or src_data; animimg/gif D:/ or S:) and degrades gracefully when its asset is missing",
         "launch without SD renders the fallback; launch with SD logs SD source"
       ]
     },
@@ -36,6 +37,18 @@
         "no blank screen when /sdcard/panel-assets/<id> is absent",
         "no retry loop for SD mount",
         "verification covers no-SD, partial-SD, and corrupt-file states"
+      ]
+    },
+    {
+      "id": "serial-terminal-uart",
+      "prompt": "在面板上做一个串口调试 App：用板载 RS485（UART1）收发数据，可以改波特率，界面上有接收区和发送框；打开/关闭串口不能卡界面，退出时要释放端口。",
+      "expected_output": "An App using require(\"uart\") with uart.new(1, 26, 27, baud) inside pcall, one link at a time, a non-blocking read(512) poll (20-40 ms) that still calls lvgl.process_events, close() on stop/exit, and a TTF subset rebuilt for every Chinese string used.",
+      "assertions": [
+        "uart.new uses port 1 and GPIO26/27 through pcall; a busy port shows an error instead of crashing the App",
+        "the main loop drains u:read(512) without a long timeout and still calls lvgl.process_events",
+        "u:close() runs on exit/abort and before reopening the port",
+        "baud/mode are validated, persisted, and the UI never busy-waits",
+        "check_font_coverage.py exits 0 for the final copy (the TTF was rebuilt, not a stale subset)"
       ]
     },
     {

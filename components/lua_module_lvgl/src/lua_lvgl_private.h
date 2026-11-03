@@ -69,6 +69,7 @@ static inline void lua_lvgl_web_tabview_set_tab_text(lv_obj_t *tv, uint32_t inde
 #define LUA_MODULE_LVGL_PANEL_IF_RGB 1
 #define LUA_MODULE_LVGL_PANEL_IF_MIPI_DSI 2
 #define LUA_MODULE_LVGL_FS_LETTER 'D'
+#define LUA_MODULE_LVGL_SD_FS_LETTER 'S'
 #define LUA_MODULE_LVGL_PATH_MAX 256
 #define LUA_LVGL_FONT_MT "lvgl.font"
 #define LUA_MODULE_LVGL_DEFAULT_FONT_PATH "fonts/NotoSansSC-Regular-sub.ttf"
@@ -118,6 +119,9 @@ typedef enum {
     LUA_LVGL_OBJ_WINDOW,
     LUA_LVGL_OBJ_WINDOW_CHILD,
     LUA_LVGL_OBJ_EAF,
+    LUA_LVGL_OBJ_LOTTIE,
+    LUA_LVGL_OBJ_ANIMIMG,
+    LUA_LVGL_OBJ_GIF,
 } lua_lvgl_obj_type_t;
 
 /* Forward declaration so lua_lvgl_event_sub_t can hold a back-pointer to
@@ -163,6 +167,10 @@ typedef struct lua_lvgl_obj_record {
     size_t string_array_count;
     void *data;
     void *data2;
+    void *frame_dsc;
+    void *frame_token;
+    void (*frame_release)(void *);
+    lv_draw_buf_t *draw_buf;
     size_t data_size;
     size_t data2_size;
     int data_width;
@@ -228,8 +236,11 @@ typedef struct {
     lua_lvgl_font_record_t *fonts;
     lua_lvgl_font_record_t *default_font;
     lv_fs_drv_t fs_drv;
+    lv_fs_drv_t sd_fs_drv;
     char data_root[LUA_MODULE_LVGL_PATH_MAX];
+    char sd_root[LUA_MODULE_LVGL_PATH_MAX];
     bool fs_registered;
+    bool sd_fs_registered;
 } lua_lvgl_state_t;
 
 typedef struct {
@@ -290,6 +301,7 @@ int lua_lvgl_set_style(lua_State *L);
 
 /* lua_lvgl_font.c */
 esp_err_t lua_lvgl_set_data_root(const char *data_root);
+esp_err_t lua_lvgl_set_sd_root(const char *sd_root);
 esp_err_t lua_lvgl_register_fs_locked(void);
 void lua_lvgl_register_font_metatable(lua_State *L);
 void lua_lvgl_release_fonts_locked(void);
@@ -317,6 +329,7 @@ int lua_lvgl_screen_load(lua_State *L);
 
 /* lua_lvgl_image.c */
 int lua_lvgl_image_set_raw_rgb565(lua_State *L);
+int lua_lvgl_image_set_frame(lua_State *L);
 int lua_lvgl_image_set_raw_argb8888(lua_State *L);
 int lua_lvgl_image_set_rotation(lua_State *L);
 int lua_lvgl_image_set_pivot(lua_State *L);
@@ -419,6 +432,54 @@ int lua_lvgl_span_gc(lua_State *L);
 int lua_lvgl_chart_series_gc(lua_State *L);
 void lua_lvgl_register_handle_metatables(lua_State *L);
 void lua_lvgl_apply_complex_widget_opts(lua_State *L, lua_lvgl_obj_ud_t *ud, lua_lvgl_obj_type_t type);
+
+/* lua_lvgl_property.c */
+int lua_lvgl_obj_set_property(lua_State *L);
+int lua_lvgl_obj_get_property(lua_State *L);
+
+/* lua_lvgl_lottie.c */
+extern const luaL_Reg lua_lvgl_lottie_module_funcs[];
+#if LV_USE_LOTTIE
+int lua_lvgl_lottie_set_src(lua_State *L);
+int lua_lvgl_lottie_set_src_data(lua_State *L);
+int lua_lvgl_lottie_restart(lua_State *L);
+int lua_lvgl_lottie_pause(lua_State *L);
+int lua_lvgl_lottie_resume(lua_State *L);
+int lua_lvgl_lottie_is_loaded(lua_State *L);
+int lua_lvgl_lottie_is_playing(lua_State *L);
+int lua_lvgl_lottie_get_duration(lua_State *L);
+int lua_lvgl_lottie_get_total_frames(lua_State *L);
+int lua_lvgl_lottie_get_time(lua_State *L);
+#endif
+
+/* lua_lvgl_animimg.c */
+extern const luaL_Reg lua_lvgl_animimg_module_funcs[];
+#if LV_USE_ANIMIMG
+int lua_lvgl_animimg_set_src(lua_State *L);
+int lua_lvgl_animimg_start(lua_State *L);
+int lua_lvgl_animimg_stop(lua_State *L);
+int lua_lvgl_animimg_set_duration(lua_State *L);
+int lua_lvgl_animimg_get_duration(lua_State *L);
+int lua_lvgl_animimg_set_repeat_count(lua_State *L);
+int lua_lvgl_animimg_get_repeat_count(lua_State *L);
+int lua_lvgl_animimg_get_src_count(lua_State *L);
+#endif
+
+/* lua_lvgl_gif.c */
+extern const luaL_Reg lua_lvgl_gif_module_funcs[];
+#if LV_USE_GIF
+int lua_lvgl_gif_set_src(lua_State *L);
+int lua_lvgl_gif_restart(lua_State *L);
+int lua_lvgl_gif_pause(lua_State *L);
+int lua_lvgl_gif_resume(lua_State *L);
+int lua_lvgl_gif_is_loaded(lua_State *L);
+int lua_lvgl_gif_set_loop_count(lua_State *L);
+int lua_lvgl_gif_get_loop_count(lua_State *L);
+int lua_lvgl_gif_get_frame_count(lua_State *L);
+int lua_lvgl_gif_get_current_frame(lua_State *L);
+int lua_lvgl_gif_set_auto_pause(lua_State *L);
+int lua_lvgl_gif_get_size(lua_State *L);
+#endif
 
 /* lua_lvgl_events.c */
 int lua_lvgl_obj_on(lua_State *L);

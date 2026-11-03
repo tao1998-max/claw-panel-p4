@@ -27,8 +27,8 @@ apps/
 ```json
 {
   "schema_version": 1,
-  "id": "light_switch",
-  "display_name": "Light",
+  "id": "example_app",
+  "display_name": "Example App",
   "entry": "scripts/main.lua",
   "icon": "assets/icon.jpg",
   "args": {},

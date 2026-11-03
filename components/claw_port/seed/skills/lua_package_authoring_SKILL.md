@@ -17,7 +17,7 @@ Use this skill when `skill_creator` or `app_creator` needs new or updated bundle
 
 Lua can only compose modules and capabilities already compiled into the device. If the requested behavior needs a missing driver, native capability, Kconfig option, or firmware component, return that limitation to the owning creator instead of fabricating an API.
 
-This board has no screenshot or vision feedback. Do not render test pages, read canvas pixels, or probe glyph coverage to validate UI; inspect the documented API and the code instead. Timer/countdown UIs should use ASCII digits and the built-in font unless the package ships a TTF with a known subset.
+This board has no screenshot or vision feedback. Do not render test pages, read canvas pixels, or probe glyph coverage to validate UI; inspect the documented API and the code instead. Timer/countdown UIs should use ASCII digits and the default LVGL font; this product does not ship `fonts/NotoSansSC-Regular-sub.ttf`. A package may ship a TTF with a known subset and load it by path.
 
 ## Authoring Flow
 

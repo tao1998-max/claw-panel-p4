@@ -302,6 +302,9 @@ void claw_core_agent_loop_task(void *arg)
 
             claw_core_control_set_phase(core, CLAW_CORE_AGENT_LOOP_PHASE_IN_LLM_HTTP);
             err = claw_core_llm_chat_messages(core,
+                                              request.view.session_id,
+                                              request.view.source_channel,
+                                              request.view.source_cap,
                                               system_prompt,
                                               messages,
                                               tools_json,

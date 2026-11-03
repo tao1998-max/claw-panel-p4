@@ -5,6 +5,8 @@ set(http_server_srcs
     "http_server_config_api.c"
     "http_server_lua_modules_api.c"
     "http_server_lua_app_api.c"
+    "http_server_lua_failures_api.c"
+    "http_server_apps_api.c"
     "http_server_status_api.c"
     "http_server_storage_api.c"
     "http_server_sd_assets_api.c"
@@ -13,6 +15,8 @@ set(http_server_srcs
     "http_server_webim_api.c"
     "http_server_webim_sessions.c"
     "http_server_schedules_api.c"
+    "http_server_tts_api.c"
+    "http_server_c6_ota_api.c"
     "http_server_json.c"
     "http_server_utils.c"
 )
@@ -35,9 +39,12 @@ idf_component_register(
         fatfs
         claw_cap
         cap_lua
+        app_registry
+        claw_port
         lua_module_http_server
         claw_manager
         claw_memory
+        esp_hosted
         claw_event_router
         cap_im_local
         cap_scheduler

@@ -18,6 +18,7 @@
 #include "esp_log.h"
 #include "lauxlib.h"
 #include "lua_image_resize.h"
+#include "lua_image_transform.h"
 
 #define LUA_MODULE_IMAGE_NAME "image"
 #define LUA_IMAGE_FRAME_MT "image.frame"
@@ -39,6 +40,7 @@ typedef struct {
     void *release_ctx;                     ///< Opaque context passed to release_cb.
     bool valid;                            ///< True when this cache slot contains usable data.
     bool owns_data;                        ///< True when the store must release data through release_cb.
+    bool writable;                         ///< True for canvases created by image.new()
 } lua_image_buffer_t;
 
 typedef struct {
@@ -314,6 +316,12 @@ static int lua_image_frame_tostring(lua_State *L)
     return 1;
 }
 
+/* Canvas methods are defined after the metatable but registered from it. */
+static int lua_image_frame_fill(lua_State *L);
+static int lua_image_frame_fill_rect(lua_State *L);
+static int lua_image_frame_line(lua_State *L);
+static int lua_image_frame_blit(lua_State *L);
+
 static void lua_image_create_frame_metatable(lua_State *L)
 {
     if (luaL_newmetatable(L, LUA_IMAGE_FRAME_MT) == 0) {
@@ -328,6 +336,14 @@ static void lua_image_create_frame_metatable(lua_State *L)
     lua_setfield(L, -2, "info");
     lua_pushcfunction(L, lua_image_frame_method_release);
     lua_setfield(L, -2, "release");
+    lua_pushcfunction(L, lua_image_frame_fill);
+    lua_setfield(L, -2, "fill");
+    lua_pushcfunction(L, lua_image_frame_fill_rect);
+    lua_setfield(L, -2, "fill_rect");
+    lua_pushcfunction(L, lua_image_frame_line);
+    lua_setfield(L, -2, "line");
+    lua_pushcfunction(L, lua_image_frame_blit);
+    lua_setfield(L, -2, "blit");
     lua_setfield(L, -2, "__index");
 
     lua_pushcfunction(L, lua_image_frame_gc);
@@ -414,6 +430,39 @@ static int lua_image_push_frame_view(lua_State *L, lua_image_store_t *store, lua
     frame->closed = false;
     luaL_getmetatable(L, LUA_IMAGE_FRAME_MT);
     lua_setmetatable(L, -2);
+    return 1;
+}
+
+/* Push an owned conversion result as a new independent image.frame and
+ * transfer buffer ownership to its store. */
+static int lua_image_push_owned_view(lua_State *L, lua_image_view_t *view, int64_t timestamp_us)
+{
+    lua_image_frame_info_t info = {0};
+    const char *fourcc;
+    esp_err_t err;
+
+    if (view == NULL || view->data == NULL) {
+        return luaL_error(L, "internal image view error");
+    }
+    fourcc = lua_image_format_fourcc(view->format);
+    if (fourcc == NULL) {
+        lua_image_release_view(view);
+        return luaL_error(L, "internal image format error");
+    }
+    info.width = view->width;
+    info.height = view->height;
+    info.bytes = view->bytes;
+    info.timestamp_us = timestamp_us;
+    strlcpy(info.pixel_format, fourcc, sizeof(info.pixel_format));
+
+    err = lua_image_push_frame(L, view->data, view->bytes, &info, lua_image_free_owned_frame, NULL);
+    if (err != ESP_OK) {
+        lua_image_release_view(view);
+        return luaL_error(L, "failed to push image frame: %s", esp_err_to_name(err));
+    }
+    view->data = NULL;
+    view->bytes = 0;
+    view->owned = false;
     return 1;
 }
 
@@ -618,6 +667,50 @@ convert:
     return err;
 }
 
+esp_err_t lua_image_retain_view(lua_State *L, int frame_index, lua_image_format_t format,
+                                const uint8_t **data, size_t *bytes,
+                                int *width, int *height, void **token)
+{
+    if (!L || !data || !bytes || !width || !height || !token) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *token = NULL;
+
+    lua_image_frame_ud_t *frame = (lua_image_frame_ud_t *)luaL_testudata(L, frame_index, LUA_IMAGE_FRAME_MT);
+    if (frame == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (frame->closed || frame->store == NULL || frame->store->closed) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err = lua_image_store_require_format(frame->store, format);
+    if (err != ESP_OK) {
+        return err;
+    }
+    const lua_image_buffer_t *buffer = lua_image_frame_get_buffer(frame);
+    lua_image_buffer_t *target = lua_image_store_get_buffer(frame->store, format);
+    (void)buffer;
+    if (target == NULL || !target->valid || target->data == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    lua_image_store_ref(frame->store);
+    *data = target->data;
+    *bytes = target->bytes;
+    *width = target->info.width;
+    *height = target->info.height;
+    *token = frame->store;
+    return ESP_OK;
+}
+
+void lua_image_release_token(void *token)
+{
+    if (token != NULL) {
+        lua_image_store_unref((lua_image_store_t *)token);
+    }
+}
+
 esp_err_t lua_image_require_format(lua_State *L, int frame_index, lua_image_format_t format, lua_image_view_t *out)
 {
     lua_image_frame_ud_t *frame;
@@ -660,6 +753,302 @@ esp_err_t lua_image_require_format(lua_State *L, int frame_index, lua_image_form
 
 /* image.convert(frame, format)
  * Ensures the requested format exists in the shared store and returns a new frame view. */
+/* ---------------- canvas helpers (image.new + frame drawing) ---------------- */
+
+static bool lua_image_canvas_bpp(lua_image_format_t format, size_t *bpp)
+{
+    if (format == LUA_IMAGE_FORMAT_RGB565LE) {
+        *bpp = 2;
+        return true;
+    }
+    if (format == LUA_IMAGE_FORMAT_GRAY8) {
+        *bpp = 1;
+        return true;
+    }
+    return false;
+}
+
+static lua_image_buffer_t *lua_image_writable_buffer(lua_State *L, int index,
+                                                     lua_image_format_t *format)
+{
+    lua_image_frame_ud_t *frame = lua_image_check_frame(L, index);
+    lua_image_buffer_t *buffer = (lua_image_buffer_t *)lua_image_frame_get_buffer(frame);
+    if (buffer == NULL) {
+        luaL_error(L, "image frame is released");
+        return NULL;
+    }
+    if (!buffer->writable) {
+        luaL_error(L, "image frame is read-only; create one with image.new()");
+        return NULL;
+    }
+    *format = frame->format;
+    return buffer;
+}
+
+static uint32_t lua_image_pack_color(uint32_t rgb, lua_image_format_t format)
+{
+    uint32_t r = (rgb >> 16) & 0xFF;
+    uint32_t g = (rgb >> 8) & 0xFF;
+    uint32_t b = rgb & 0xFF;
+    if (format == LUA_IMAGE_FORMAT_GRAY8) {
+        return (r * 299 + g * 587 + b * 114) / 1000;
+    }
+    return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+}
+
+static bool lua_image_parse_color(lua_State *L, int index, lua_image_format_t format,
+                                  uint32_t *packed)
+{
+    uint32_t rgb = 0;
+    if (lua_isinteger(L, index)) {
+        rgb = (uint32_t)lua_tointeger(L, index) & 0xFFFFFF;
+    } else if (lua_isstring(L, index)) {
+        const char *text = lua_tostring(L, index);
+        unsigned int value = 0;
+        if (text[0] == '#') {
+            text++;
+        }
+        if (sscanf(text, "%6x", &value) != 1) {
+            return false;
+        }
+        rgb = value & 0xFFFFFF;
+    } else {
+        return false;
+    }
+    *packed = lua_image_pack_color(rgb, format);
+    return true;
+}
+
+static int lua_image_opa(lua_State *L, int index)
+{
+    if (lua_isnoneornil(L, index)) {
+        return 255;
+    }
+    int opa = (int)luaL_checkinteger(L, index);
+    return opa < 0 ? 0 : (opa > 255 ? 255 : opa);
+}
+
+static void lua_image_blend_pixel(uint8_t *dst, size_t bpp, uint32_t color, int opa)
+{
+    if (opa >= 255) {
+        if (bpp == 1) {
+            dst[0] = (uint8_t)color;
+        } else {
+            dst[0] = (uint8_t)(color & 0xFF);
+            dst[1] = (uint8_t)((color >> 8) & 0xFF);
+        }
+        return;
+    }
+    if (bpp == 1) {
+        dst[0] = (uint8_t)((dst[0] * (255 - opa) + (int)color * opa) / 255);
+        return;
+    }
+    uint32_t src = color;
+    uint32_t old = (uint32_t)dst[0] | ((uint32_t)dst[1] << 8);
+    int r0 = (old >> 11) & 0x1F, g0 = (old >> 5) & 0x3F, b0 = old & 0x1F;
+    int r1 = (src >> 11) & 0x1F, g1 = (src >> 5) & 0x3F, b1 = src & 0x1F;
+    int r = (r0 * (255 - opa) + r1 * opa) / 255;
+    int g = (g0 * (255 - opa) + g1 * opa) / 255;
+    int b = (b0 * (255 - opa) + b1 * opa) / 255;
+    uint32_t out = ((uint32_t)r << 11) | ((uint32_t)g << 5) | (uint32_t)b;
+    dst[0] = (uint8_t)(out & 0xFF);
+    dst[1] = (uint8_t)((out >> 8) & 0xFF);
+}
+
+static void lua_image_fill_rect_raw(uint8_t *data, lua_image_format_t format, int width, int height,
+                                    int x, int y, int w, int h, uint32_t color, int opa)
+{
+    size_t bpp = format == LUA_IMAGE_FORMAT_GRAY8 ? 1 : 2;
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + w > width ? width : x + w;
+    int y1 = y + h > height ? height : y + h;
+    if (x0 >= x1 || y0 >= y1) {
+        return;
+    }
+    if (opa >= 255) {
+        /* Opaque fills are common for backgrounds; paint one row and copy it
+         * across the rectangle instead of blending every pixel. */
+        size_t row_bytes = (size_t)(x1 - x0) * bpp;
+        uint8_t *first = data + ((size_t)y0 * (size_t)width + (size_t)x0) * bpp;
+
+        if (bpp == 1) {
+            memset(first, (int)(color & 0xFF), row_bytes);
+        } else {
+            uint16_t *pixels = (uint16_t *)first;
+            uint16_t value = (uint16_t)color;
+            for (int col = 0; col < x1 - x0; col++) {
+                pixels[col] = value;
+            }
+        }
+        for (int row = y0 + 1; row < y1; row++) {
+            memcpy(data + ((size_t)row * (size_t)width + (size_t)x0) * bpp, first, row_bytes);
+        }
+        return;
+    }
+    for (int row = y0; row < y1; row++) {
+        uint8_t *pixel = data + ((size_t)row * (size_t)width + (size_t)x0) * bpp;
+        for (int col = x0; col < x1; col++) {
+            lua_image_blend_pixel(pixel, bpp, color, opa);
+            pixel += bpp;
+        }
+    }
+}
+
+static int lua_image_frame_fill(lua_State *L)
+{
+    lua_image_format_t format;
+    lua_image_buffer_t *buffer = lua_image_writable_buffer(L, 1, &format);
+    uint32_t color;
+    if (!lua_image_parse_color(L, 2, format, &color)) {
+        return luaL_error(L, "fill colour must be 0xRRGGBB or \"#rrggbb\"");
+    }
+    int opa = lua_image_opa(L, 3);
+    lua_image_fill_rect_raw(buffer->data, format, buffer->info.width, buffer->info.height,
+                            0, 0, buffer->info.width, buffer->info.height, color, opa);
+    return 0;
+}
+
+static int lua_image_frame_fill_rect(lua_State *L)
+{
+    lua_image_format_t format;
+    lua_image_buffer_t *buffer = lua_image_writable_buffer(L, 1, &format);
+    int x = (int)luaL_checkinteger(L, 2);
+    int y = (int)luaL_checkinteger(L, 3);
+    int w = (int)luaL_checkinteger(L, 4);
+    int h = (int)luaL_checkinteger(L, 5);
+    uint32_t color;
+    if (!lua_image_parse_color(L, 6, format, &color)) {
+        return luaL_error(L, "fill colour must be 0xRRGGBB or \"#rrggbb\"");
+    }
+    lua_image_fill_rect_raw(buffer->data, format, buffer->info.width, buffer->info.height,
+                            x, y, w, h, color, lua_image_opa(L, 7));
+    return 0;
+}
+
+static int lua_image_frame_line(lua_State *L)
+{
+    lua_image_format_t format;
+    lua_image_buffer_t *buffer = lua_image_writable_buffer(L, 1, &format);
+    int x0 = (int)luaL_checkinteger(L, 2);
+    int y0 = (int)luaL_checkinteger(L, 3);
+    int x1 = (int)luaL_checkinteger(L, 4);
+    int y1 = (int)luaL_checkinteger(L, 5);
+    uint32_t color;
+    if (!lua_image_parse_color(L, 6, format, &color)) {
+        return luaL_error(L, "line colour must be 0xRRGGBB or \"#rrggbb\"");
+    }
+    int width = (int)luaL_optinteger(L, 7, 1);
+    if (width < 1) {
+        width = 1;
+    }
+    if (width > 16) {
+        width = 16;
+    }
+    int half = width / 2;
+    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    while (true) {
+        lua_image_fill_rect_raw(buffer->data, format, buffer->info.width, buffer->info.height,
+                                x0 - half, y0 - half, width, width, color, 255);
+        if (x0 == x1 && y0 == y1) {
+            break;
+        }
+        int e2 = 2 * err;
+        if (e2 >= dy) {
+            err += dy;
+            x0 += sx;
+        }
+        if (e2 <= dx) {
+            err += dx;
+            y0 += sy;
+        }
+    }
+    return 0;
+}
+
+static int lua_image_frame_blit(lua_State *L)
+{
+    lua_image_format_t dst_format;
+    lua_image_buffer_t *dst = lua_image_writable_buffer(L, 1, &dst_format);
+    int x = (int)luaL_optinteger(L, 3, 0);
+    int y = (int)luaL_optinteger(L, 4, 0);
+    int opa = lua_image_opa(L, 5);
+    lua_image_view_t src = {0};
+    esp_err_t err = lua_image_require_format(L, 2, dst_format, &src);
+    if (err != ESP_OK) {
+        return luaL_error(L, "blit source conversion failed: %s", esp_err_to_name(err));
+    }
+    size_t bpp = dst_format == LUA_IMAGE_FORMAT_GRAY8 ? 1 : 2;
+    int sw = src.width;
+    int sh = src.height;
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + sw > dst->info.width ? dst->info.width : x + sw;
+    int y1 = y + sh > dst->info.height ? dst->info.height : y + sh;
+    for (int row = y0; row < y1; row++) {
+        const uint8_t *srow = src.data + ((size_t)(row - y) * (size_t)sw + (size_t)(x0 - x)) * bpp;
+        uint8_t *drow = dst->data + ((size_t)row * (size_t)dst->info.width + (size_t)x0) * bpp;
+        if (opa >= 255) {
+            memcpy(drow, srow, (size_t)(x1 - x0) * bpp);
+        } else {
+            for (int col = x0; col < x1; col++) {
+                uint32_t color = bpp == 1 ? srow[0] :
+                                 (uint32_t)srow[0] | ((uint32_t)srow[1] << 8);
+                lua_image_blend_pixel(drow, bpp, color, opa);
+                srow += bpp;
+                drow += bpp;
+            }
+        }
+    }
+    lua_image_release_view(&src);
+    return 0;
+}
+
+static int lua_module_image_new(lua_State *L)
+{
+    int width = (int)luaL_checkinteger(L, 1);
+    int height = (int)luaL_checkinteger(L, 2);
+    lua_Integer format_value = luaL_checkinteger(L, 3);
+    lua_image_format_t format;
+    size_t bpp = 0;
+
+    if (!lua_image_check_format_value(format_value, &format) ||
+        !lua_image_canvas_bpp(format, &bpp)) {
+        return luaL_error(L, "image.new supports image.RGB565 or image.GRAY8");
+    }
+    if (width <= 0 || height <= 0 ||
+        (size_t)width > LUA_IMAGE_MAX_PIXELS / (size_t)height) {
+        return luaL_error(L, "image.new size out of range");
+    }
+    size_t bytes = (size_t)width * (size_t)height * bpp;
+    uint8_t *data = (uint8_t *)heap_caps_aligned_calloc(16, 1, bytes, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+    if (!data) {
+        return luaL_error(L, "image.new allocation failed (%u bytes)", (unsigned)bytes);
+    }
+
+    const char *fourcc = format == LUA_IMAGE_FORMAT_RGB565LE ? "RGBP" : "GREY";
+    lua_image_frame_info_t info = {0};
+    info.width = width;
+    info.height = height;
+    info.bytes = bytes;
+    info.timestamp_us = 0;
+    strlcpy(info.pixel_format, fourcc, sizeof(info.pixel_format));
+
+    esp_err_t err = lua_image_push_frame(L, data, bytes, &info, lua_image_free_owned_frame, NULL);
+    if (err != ESP_OK) {
+        free(data);
+        return luaL_error(L, "image.new failed: %s", esp_err_to_name(err));
+    }
+    lua_image_frame_ud_t *frame = (lua_image_frame_ud_t *)lua_touserdata(L, -1);
+    lua_image_buffer_t *buffer = lua_image_store_get_buffer(frame->store, format);
+    if (buffer) {
+        buffer->writable = true;
+    }
+    return 1;
+}
+
 static int lua_module_image_convert(lua_State *L)
 {
     lua_Integer format_value = luaL_checkinteger(L, 2);
@@ -780,6 +1169,63 @@ static int lua_module_image_resize(lua_State *L)
                           lua_image_format_name(output_format));
     }
 
+    /* JPEG fast path: when this frame has not been decoded yet, ask the
+     * decoder for a reduced stage that fits the target and skip caching the
+     * full-size RGB565 buffer in the image store. */
+    if (output_format == LUA_IMAGE_FORMAT_RGB565LE &&
+        (source_format == LUA_IMAGE_FORMAT_JPEG || source_format == LUA_IMAGE_FORMAT_MJPEG)) {
+        lua_image_buffer_t *jpeg_buffer = lua_image_store_get_buffer(source->store, LUA_IMAGE_FORMAT_JPEG);
+        lua_image_buffer_t *rgb_buffer = lua_image_store_get_buffer(source->store, LUA_IMAGE_FORMAT_RGB565LE);
+
+        if (jpeg_buffer != NULL && jpeg_buffer->valid && jpeg_buffer->data != NULL &&
+            (rgb_buffer == NULL || !rgb_buffer->valid)) {
+            lua_image_source_t jpeg_src = {0};
+            lua_image_jpeg_decode_opts_t decode_opts = {
+                .max_width = dst_width,
+                .max_height = dst_height,
+            };
+            lua_image_view_t scaled = {0};
+
+            if (lua_image_source_from_buffer(jpeg_buffer, LUA_IMAGE_FORMAT_JPEG, &jpeg_src) == ESP_OK &&
+                lua_image_jpeg_decode(&jpeg_src, &decode_opts, &scaled) == ESP_OK) {
+                lua_image_view_t output = {0};
+                esp_err_t resize_err;
+
+                if (scaled.width == dst_width && scaled.height == dst_height) {
+                    output = scaled;
+                    scaled.data = NULL;
+                    scaled.bytes = 0;
+                    scaled.owned = false;
+                    resize_err = ESP_OK;
+                } else {
+                    lua_image_source_t scaled_src = {
+                        .data = scaled.data,
+                        .bytes = scaled.bytes,
+                        .width = scaled.width,
+                        .height = scaled.height,
+                        .format = LUA_IMAGE_FORMAT_RGB565LE,
+                    };
+                    lua_image_view_t scaled_view = scaled;
+
+                    scaled_view.owned = false;
+                    strlcpy(scaled_src.source_format, "RGBP", sizeof(scaled_src.source_format));
+                    resize_err = lua_image_resize_ppa(&scaled_src, output_format, dst_width, dst_height,
+                                                      filter, &output);
+                    if (resize_err != ESP_OK) {
+                        resize_err = lua_image_resize_view(&scaled_view, dst_width, dst_height, filter, &output);
+                    }
+                }
+                if (resize_err == ESP_OK) {
+                    int64_t jpeg_timestamp_us = jpeg_buffer->info.timestamp_us;
+                    lua_image_release_view(&scaled);
+                    return lua_image_push_owned_view(L, &output, jpeg_timestamp_us);
+                }
+                lua_image_release_view(&output);
+                lua_image_release_view(&scaled);
+            }
+        }
+    }
+
     direct = lua_image_store_get_buffer(source->store, source_format);
     if (lua_image_source_from_buffer(direct, source_format, &direct_src) == ESP_OK &&
         lua_image_resize_ppa(&direct_src, output_format, dst_width, dst_height, filter, &output_view) == ESP_OK) {
@@ -805,7 +1251,12 @@ static int lua_module_image_resize(lua_State *L)
         intermediate_view.format = output_format;
         intermediate_view.owned = false;
         strlcpy(intermediate_view.source_format, intermediate_src.source_format, sizeof(intermediate_view.source_format));
-        err = lua_image_resize_view(&intermediate_view, dst_width, dst_height, filter, &output_view);
+        /* PPA can scale the freshly converted buffer; CPU bilinear is the
+         * fallback when PPA is unavailable or the filter is nearest. */
+        err = lua_image_resize_ppa(&intermediate_src, output_format, dst_width, dst_height, filter, &output_view);
+        if (err != ESP_OK) {
+            err = lua_image_resize_view(&intermediate_view, dst_width, dst_height, filter, &output_view);
+        }
         if (err != ESP_OK) {
             return luaL_error(L, "image.resize failed: %s", esp_err_to_name(err));
         }
@@ -835,13 +1286,17 @@ static int lua_module_image_resize(lua_State *L)
     return 1;
 }
 
-/* image.load_file(path)
- * Loads an image file into an owned image.frame. The frame owns the file buffer
- * and releases it when frame:release(), <close>, or __gc runs. */
+/* image.load_file(path [, opts])
+ * By default the file is kept as a lazy JPEG frame. With opts.max_width /
+ * opts.max_height the JPEG is decoded immediately, using the decoder's
+ * 1/2..1/8 stages when the dimensions allow it, and the file buffer is
+ * released. */
 static int lua_module_image_load_file(lua_State *L)
 {
     const char *path = luaL_checkstring(L, 1);
     lua_image_file_format_t format = lua_image_guess_file_format(path);
+    lua_image_jpeg_decode_opts_t decode_opts = {0};
+    bool eager = false;
     FILE *file = NULL;
     long file_size = 0;
     uint8_t *data = NULL;
@@ -855,6 +1310,25 @@ static int lua_module_image_load_file(lua_State *L)
 
     if (format != LUA_IMAGE_FILE_FORMAT_JPEG) {
         return luaL_error(L, "image.load_file unsupported image file suffix: %s", path);
+    }
+    if (!lua_isnoneornil(L, 2)) {
+        luaL_checktype(L, 2, LUA_TTABLE);
+        lua_getfield(L, 2, "max_width");
+        if (!lua_isnil(L, -1)) {
+            decode_opts.max_width = (int)luaL_checkinteger(L, -1);
+            eager = true;
+        }
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "max_height");
+        if (!lua_isnil(L, -1)) {
+            decode_opts.max_height = (int)luaL_checkinteger(L, -1);
+            eager = true;
+        }
+        lua_pop(L, 1);
+        if (decode_opts.max_width < 0 || decode_opts.max_height < 0 ||
+            (eager && decode_opts.max_width == 0 && decode_opts.max_height == 0)) {
+            return luaL_error(L, "image.load_file max_width/max_height must be positive");
+        }
     }
 
     file = fopen(path, "rb");
@@ -888,6 +1362,28 @@ static int lua_module_image_load_file(lua_State *L)
         return luaL_error(L, "image.load_file read failed for %s", path);
     }
     fclose(file);
+
+    if (eager) {
+        lua_image_source_t src = {
+            .data = data,
+            .bytes = (size_t)file_size,
+            .width = 0,
+            .height = 0,
+            .format = LUA_IMAGE_FORMAT_JPEG,
+        };
+        lua_image_view_t view = {0};
+
+        strlcpy(src.source_format, "JPEG", sizeof(src.source_format));
+        err = lua_image_jpeg_decode(&src, &decode_opts, &view);
+        free(data);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "image.load_file decode failed: %s", esp_err_to_name(err));
+            return luaL_error(L, "image.load_file decode failed: %s", esp_err_to_name(err));
+        }
+        ESP_LOGI(TAG, "load_file decoded %s at %dx%d (requested max %dx%d)",
+                 path, view.width, view.height, decode_opts.max_width, decode_opts.max_height);
+        return lua_image_push_owned_view(L, &view, 0);
+    }
 
     config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
     jpeg_err = jpeg_dec_open(&config, &decoder);
@@ -928,51 +1424,439 @@ static int lua_module_image_load_file(lua_State *L)
     return 1;
 }
 
-/* image.save_file(path, frame)
- * Saves an image.frame using the format implied by the file suffix. */
+typedef struct {
+    int quality;
+    jpeg_subsampling_t subsampling;
+} lua_image_jpeg_encode_opts_t;
+
+/* Returns true when opts was provided; fills defaults otherwise. */
+static bool lua_image_parse_encode_opts(lua_State *L, int index, lua_image_jpeg_encode_opts_t *opts)
+{
+    opts->quality = 80;
+    opts->subsampling = JPEG_SUBSAMPLE_422;
+    if (lua_isnoneornil(L, index)) {
+        return false;
+    }
+    luaL_checktype(L, index, LUA_TTABLE);
+    lua_getfield(L, index, "quality");
+    if (!lua_isnil(L, -1)) {
+        int quality = (int)luaL_checkinteger(L, -1);
+        opts->quality = quality < 1 ? 1 : (quality > 100 ? 100 : quality);
+    }
+    lua_pop(L, 1);
+
+    lua_getfield(L, index, "subsample");
+    if (!lua_isnil(L, -1)) {
+        const char *name = luaL_checkstring(L, -1);
+        if (strcmp(name, "444") == 0) {
+            opts->subsampling = JPEG_SUBSAMPLE_444;
+        } else if (strcmp(name, "422") == 0) {
+            opts->subsampling = JPEG_SUBSAMPLE_422;
+        } else if (strcmp(name, "420") == 0) {
+            opts->subsampling = JPEG_SUBSAMPLE_420;
+        } else if (strcmp(name, "gray") == 0) {
+            opts->subsampling = JPEG_SUBSAMPLE_GRAY;
+        } else {
+            luaL_error(L, "image: unsupported subsample \"%s\"", name);
+        }
+    }
+    lua_pop(L, 1);
+    return true;
+}
+
+/* Prefer a format the encoder accepts directly; everything else goes through
+ * RGB565. */
+static lua_image_format_t lua_image_pick_encode_source(const lua_image_frame_ud_t *frame)
+{
+    switch (frame->format) {
+    case LUA_IMAGE_FORMAT_GRAY8:
+    case LUA_IMAGE_FORMAT_RGB565LE:
+    case LUA_IMAGE_FORMAT_RGB565BE:
+    case LUA_IMAGE_FORMAT_YUYV:
+    case LUA_IMAGE_FORMAT_UYVY:
+        return frame->format;
+    default:
+        return LUA_IMAGE_FORMAT_RGB565LE;
+    }
+}
+
+static esp_err_t lua_image_require_encode_source(lua_State *L, int frame_index,
+                                                 lua_image_frame_ud_t *frame,
+                                                 lua_image_view_t *view)
+{
+    lua_image_format_t format = lua_image_pick_encode_source(frame);
+    esp_err_t err = lua_image_require_format(L, frame_index, format, view);
+
+    if (err != ESP_OK && format != LUA_IMAGE_FORMAT_RGB565LE) {
+        err = lua_image_require_format(L, frame_index, LUA_IMAGE_FORMAT_RGB565LE, view);
+    }
+    return err;
+}
+
+static esp_err_t lua_image_save_view(const char *path, const lua_image_view_t *view)
+{
+    FILE *file = fopen(path, "wb");
+
+    if (file == NULL) {
+        ESP_LOGE(TAG, "open %s failed: errno=%d", path, errno);
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (fwrite(view->data, 1, view->bytes, file) != view->bytes) {
+        ESP_LOGE(TAG, "write %s failed: errno=%d", path, errno);
+        fclose(file);
+        return ESP_FAIL;
+    }
+    if (fclose(file) != 0) {
+        ESP_LOGE(TAG, "close %s failed: errno=%d", path, errno);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+/* image.load_raw(path, width, height [, format])
+ * Loads tightly packed pixel data (RGB565LE or GRAY8) as an owned frame.
+ * Useful for backgrounds/sprites encoded offline with better dithering than
+ * the device JPEG decoder can provide. */
+static int lua_module_image_load_raw(lua_State *L)
+{
+    const char *path = luaL_checkstring(L, 1);
+    int width = (int)luaL_checkinteger(L, 2);
+    int height = (int)luaL_checkinteger(L, 3);
+    lua_image_format_t format = LUA_IMAGE_FORMAT_RGB565LE;
+    const char *fourcc;
+    size_t bpp;
+    size_t expected;
+    FILE *file;
+    long file_size;
+    uint8_t *data;
+    lua_image_frame_info_t info = {0};
+    esp_err_t err;
+
+    if (!lua_isnoneornil(L, 4)) {
+        lua_Integer value = luaL_checkinteger(L, 4);
+        if (!lua_image_check_format_value(value, &format)) {
+            return luaL_error(L, "image.load_raw invalid format constant: %d", (int)value);
+        }
+    }
+    if (format == LUA_IMAGE_FORMAT_RGB565LE) {
+        fourcc = "RGBP";
+        bpp = 2;
+    } else if (format == LUA_IMAGE_FORMAT_GRAY8) {
+        fourcc = "GREY";
+        bpp = 1;
+    } else {
+        return luaL_error(L, "image.load_raw supports image.RGB565 or image.GRAY8");
+    }
+    if (width <= 0 || height <= 0 ||
+        (size_t)width > LUA_IMAGE_MAX_PIXELS / (size_t)height) {
+        return luaL_error(L, "image.load_raw size out of range");
+    }
+    if ((size_t)width > SIZE_MAX / (size_t)height / bpp) {
+        return luaL_error(L, "image.load_raw size out of range");
+    }
+    expected = (size_t)width * (size_t)height * bpp;
+
+    file = fopen(path, "rb");
+    if (file == NULL) {
+        return luaL_error(L, "image.load_raw failed to open %s: errno=%d", path, errno);
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return luaL_error(L, "image.load_raw seek failed for %s", path);
+    }
+    file_size = ftell(file);
+    if (file_size < 0 || (unsigned long)file_size != (unsigned long)expected ||
+        fseek(file, 0, SEEK_SET) != 0) {
+        ESP_LOGE(TAG, "image.load_raw size mismatch: %s is %ld bytes, expected %u",
+                 path, file_size, (unsigned)expected);
+        fclose(file);
+        return luaL_error(L, "image.load_raw size mismatch for %s (expected %u bytes)",
+                          path, (unsigned)expected);
+    }
+    data = (uint8_t *)heap_caps_malloc(expected, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+    if (data == NULL) {
+        fclose(file);
+        return luaL_error(L, "image.load_raw no memory");
+    }
+    if (fread(data, 1, expected, file) != expected) {
+        free(data);
+        fclose(file);
+        return luaL_error(L, "image.load_raw read failed for %s", path);
+    }
+    fclose(file);
+
+    info.width = width;
+    info.height = height;
+    info.bytes = expected;
+    info.timestamp_us = 0;
+    strlcpy(info.pixel_format, fourcc, sizeof(info.pixel_format));
+    err = lua_image_push_frame(L, data, expected, &info, lua_image_free_owned_frame, NULL);
+    if (err != ESP_OK) {
+        free(data);
+        return luaL_error(L, "image.load_raw failed: %s", esp_err_to_name(err));
+    }
+    return 1;
+}
+
+/* image.save_file(path, frame [, opts])
+ * Saves an image.frame using the format implied by the file suffix. With opts
+ * the frame is re-encoded with the requested quality/subsampling. */
 static int lua_module_image_save_file(lua_State *L)
 {
     const char *path = luaL_checkstring(L, 1);
+    lua_image_frame_ud_t *source = lua_image_check_frame(L, 2);
     lua_image_file_format_t format = lua_image_guess_file_format(path);
+    lua_image_jpeg_encode_opts_t opts;
+    bool custom = lua_image_parse_encode_opts(L, 3, &opts);
     lua_image_view_t view = {0};
-    FILE *file = NULL;
+    lua_image_view_t jpeg = {0};
     esp_err_t err;
 
     if (format != LUA_IMAGE_FILE_FORMAT_JPEG) {
         return luaL_error(L, "image.save_file unsupported image file suffix: %s", path);
     }
+    if (source->closed || source->store == NULL || source->store->closed) {
+        return luaL_error(L, "image frame is released");
+    }
 
-    err = lua_image_require_format(L, 2, LUA_IMAGE_FORMAT_JPEG, &view);
+    if (!custom) {
+        err = lua_image_require_format(L, 2, LUA_IMAGE_FORMAT_JPEG, &view);
+        if (err != ESP_OK) {
+            return luaL_error(L, "image.save_file failed to encode JPEG: %s", esp_err_to_name(err));
+        }
+        err = lua_image_save_view(path, &view);
+        lua_image_release_view(&view);
+        if (err != ESP_OK) {
+            return luaL_error(L, "image.save_file failed for %s: %s", path, esp_err_to_name(err));
+        }
+        return 0;
+    }
+
+    err = lua_image_require_encode_source(L, 2, source, &view);
+    if (err != ESP_OK) {
+        return luaL_error(L, "image.save_file source unavailable: %s", esp_err_to_name(err));
+    }
+    err = lua_image_encode_jpeg(&view, opts.quality, opts.subsampling, &jpeg);
+    lua_image_release_view(&view);
     if (err != ESP_OK) {
         return luaL_error(L, "image.save_file failed to encode JPEG: %s", esp_err_to_name(err));
     }
-
-    file = fopen(path, "wb");
-    if (file == NULL) {
-        lua_image_release_view(&view);
-        return luaL_error(L, "image.save_file failed to open %s: errno=%d", path, errno);
+    err = lua_image_save_view(path, &jpeg);
+    lua_image_release_view(&jpeg);
+    if (err != ESP_OK) {
+        return luaL_error(L, "image.save_file failed for %s: %s", path, esp_err_to_name(err));
     }
-    if (fwrite(view.data, 1, view.bytes, file) != view.bytes) {
-        fclose(file);
-        lua_image_release_view(&view);
-        return luaL_error(L, "image.save_file write failed for %s", path);
-    }
-    if (fclose(file) != 0) {
-        ESP_LOGE(TAG, "close JPEG output file failed: %s errno=%d", path, errno);
-        lua_image_release_view(&view);
-        return luaL_error(L, "image.save_file close failed for %s", path);
-    }
-
-    lua_image_release_view(&view);
     return 0;
+}
+
+/* image.encode(frame [, opts]) -> image.frame */
+static int lua_module_image_encode(lua_State *L)
+{
+    lua_image_frame_ud_t *source = lua_image_check_frame(L, 1);
+    lua_image_jpeg_encode_opts_t opts;
+    bool custom = lua_image_parse_encode_opts(L, 2, &opts);
+    lua_image_view_t view = {0};
+    lua_image_view_t jpeg = {0};
+    esp_err_t err;
+
+    if (source->closed || source->store == NULL || source->store->closed) {
+        return luaL_error(L, "image frame is released");
+    }
+    if (!custom && (source->format == LUA_IMAGE_FORMAT_JPEG || source->format == LUA_IMAGE_FORMAT_MJPEG)) {
+        lua_image_buffer_t *buffer = lua_image_store_get_buffer(source->store, LUA_IMAGE_FORMAT_JPEG);
+        if (buffer != NULL && buffer->valid && buffer->data != NULL) {
+            return lua_image_push_frame_view(L, source->store, LUA_IMAGE_FORMAT_JPEG);
+        }
+    }
+    err = lua_image_require_encode_source(L, 1, source, &view);
+    if (err != ESP_OK) {
+        return luaL_error(L, "image.encode source unavailable: %s", esp_err_to_name(err));
+    }
+    err = lua_image_encode_jpeg(&view, opts.quality, opts.subsampling, &jpeg);
+    lua_image_release_view(&view);
+    if (err != ESP_OK) {
+        return luaL_error(L, "image.encode failed: %s", esp_err_to_name(err));
+    }
+    return lua_image_push_owned_view(L, &jpeg, 0);
+}
+
+/* image.crop(frame, x, y, w, h) -> image.frame */
+static int lua_module_image_crop(lua_State *L)
+{
+    lua_image_frame_ud_t *source = lua_image_check_frame(L, 1);
+    int x = (int)luaL_checkinteger(L, 2);
+    int y = (int)luaL_checkinteger(L, 3);
+    int w = (int)luaL_checkinteger(L, 4);
+    int h = (int)luaL_checkinteger(L, 5);
+    lua_image_format_t output_format;
+    const lua_image_buffer_t *frame_buffer;
+    lua_image_buffer_t *buffer;
+    lua_image_source_t src = {0};
+    lua_image_view_t view = {0};
+    lua_image_op_t op = {0};
+    esp_err_t err;
+
+    if (source->closed || source->store == NULL || source->store->closed) {
+        return luaL_error(L, "image frame is released");
+    }
+    if (w <= 0 || h <= 0) {
+        return luaL_error(L, "image.crop width/height must be positive");
+    }
+    frame_buffer = lua_image_frame_get_buffer(source);
+    if (frame_buffer == NULL) {
+        return luaL_error(L, "image frame is released");
+    }
+    if (x < 0) {
+        x = 0;
+    }
+    if (y < 0) {
+        y = 0;
+    }
+    if (x >= frame_buffer->info.width || y >= frame_buffer->info.height) {
+        return luaL_error(L, "image.crop origin outside the image");
+    }
+    if (w > frame_buffer->info.width - x) {
+        w = frame_buffer->info.width - x;
+    }
+    if (h > frame_buffer->info.height - y) {
+        h = frame_buffer->info.height - y;
+    }
+
+    output_format = source->format == LUA_IMAGE_FORMAT_GRAY8 ?
+                    LUA_IMAGE_FORMAT_GRAY8 : LUA_IMAGE_FORMAT_RGB565LE;
+    err = lua_image_store_require_format(source->store, output_format);
+    if (err != ESP_OK) {
+        return luaL_error(L, "image.crop source conversion failed: %s", esp_err_to_name(err));
+    }
+    buffer = lua_image_store_get_buffer(source->store, output_format);
+    err = lua_image_source_from_buffer(buffer, output_format, &src);
+    if (err != ESP_OK) {
+        return luaL_error(L, "image.crop source unavailable");
+    }
+    op.crop_x = x;
+    op.crop_y = y;
+    op.crop_w = w;
+    op.crop_h = h;
+    err = lua_image_transform_view(&src, output_format, &op, &view);
+    if (err != ESP_OK) {
+        return luaL_error(L, "image.crop failed: %s", esp_err_to_name(err));
+    }
+    return lua_image_push_owned_view(L, &view, buffer->info.timestamp_us);
+}
+
+/* image.rotate(frame, clockwise_degrees) -> image.frame */
+static int lua_module_image_rotate(lua_State *L)
+{
+    lua_image_frame_ud_t *source = lua_image_check_frame(L, 1);
+    int angle = (int)luaL_checkinteger(L, 2);
+    lua_image_format_t output_format;
+    lua_image_buffer_t *buffer;
+    lua_image_source_t src = {0};
+    lua_image_view_t view = {0};
+    lua_image_op_t op = {0};
+    esp_err_t err;
+
+    if (source->closed || source->store == NULL || source->store->closed) {
+        return luaL_error(L, "image frame is released");
+    }
+    if (angle != 90 && angle != 180 && angle != 270) {
+        return luaL_error(L, "image.rotate angle must be 90, 180 or 270");
+    }
+
+    /* Decode-time rotation avoids materialising the unrotated RGB565 frame. */
+    if (source->format == LUA_IMAGE_FORMAT_JPEG || source->format == LUA_IMAGE_FORMAT_MJPEG) {
+        lua_image_buffer_t *jpeg_buffer = lua_image_store_get_buffer(source->store, LUA_IMAGE_FORMAT_JPEG);
+        lua_image_buffer_t *rgb_buffer = lua_image_store_get_buffer(source->store, LUA_IMAGE_FORMAT_RGB565LE);
+        if (jpeg_buffer != NULL && jpeg_buffer->valid && jpeg_buffer->data != NULL &&
+            (rgb_buffer == NULL || !rgb_buffer->valid)) {
+            lua_image_source_t jpeg_src = {0};
+            lua_image_jpeg_decode_opts_t decode_opts = { .rotate_cw = angle };
+
+            if (lua_image_source_from_buffer(jpeg_buffer, LUA_IMAGE_FORMAT_JPEG, &jpeg_src) == ESP_OK &&
+                lua_image_jpeg_decode(&jpeg_src, &decode_opts, &view) == ESP_OK) {
+                return lua_image_push_owned_view(L, &view, jpeg_buffer->info.timestamp_us);
+            }
+        }
+    }
+
+    output_format = source->format == LUA_IMAGE_FORMAT_GRAY8 ?
+                    LUA_IMAGE_FORMAT_GRAY8 : LUA_IMAGE_FORMAT_RGB565LE;
+    err = lua_image_store_require_format(source->store, output_format);
+    if (err != ESP_OK) {
+        return luaL_error(L, "image.rotate source conversion failed: %s", esp_err_to_name(err));
+    }
+    buffer = lua_image_store_get_buffer(source->store, output_format);
+    err = lua_image_source_from_buffer(buffer, output_format, &src);
+    if (err != ESP_OK) {
+        return luaL_error(L, "image.rotate source unavailable");
+    }
+    op.rotation_cw = angle;
+    err = lua_image_transform_view(&src, output_format, &op, &view);
+    if (err != ESP_OK) {
+        return luaL_error(L, "image.rotate failed: %s", esp_err_to_name(err));
+    }
+    return lua_image_push_owned_view(L, &view, buffer->info.timestamp_us);
+}
+
+/* image.flip(frame, "horizontal"|"vertical") -> image.frame */
+static int lua_module_image_flip(lua_State *L)
+{
+    lua_image_frame_ud_t *source = lua_image_check_frame(L, 1);
+    const char *direction = luaL_checkstring(L, 2);
+    bool mirror_x;
+    bool mirror_y;
+    lua_image_format_t output_format;
+    lua_image_buffer_t *buffer;
+    lua_image_source_t src = {0};
+    lua_image_view_t view = {0};
+    lua_image_op_t op = {0};
+    esp_err_t err;
+
+    if (source->closed || source->store == NULL || source->store->closed) {
+        return luaL_error(L, "image frame is released");
+    }
+    if (strcmp(direction, "h") == 0 || strcmp(direction, "horizontal") == 0 || strcmp(direction, "x") == 0) {
+        mirror_x = true;
+        mirror_y = false;
+    } else if (strcmp(direction, "v") == 0 || strcmp(direction, "vertical") == 0 || strcmp(direction, "y") == 0) {
+        mirror_x = false;
+        mirror_y = true;
+    } else {
+        return luaL_error(L, "image.flip direction must be \"horizontal\" or \"vertical\"");
+    }
+
+    output_format = source->format == LUA_IMAGE_FORMAT_GRAY8 ?
+                    LUA_IMAGE_FORMAT_GRAY8 : LUA_IMAGE_FORMAT_RGB565LE;
+    err = lua_image_store_require_format(source->store, output_format);
+    if (err != ESP_OK) {
+        return luaL_error(L, "image.flip source conversion failed: %s", esp_err_to_name(err));
+    }
+    buffer = lua_image_store_get_buffer(source->store, output_format);
+    err = lua_image_source_from_buffer(buffer, output_format, &src);
+    if (err != ESP_OK) {
+        return luaL_error(L, "image.flip source unavailable");
+    }
+    op.mirror_x = mirror_x;
+    op.mirror_y = mirror_y;
+    err = lua_image_transform_view(&src, output_format, &op, &view);
+    if (err != ESP_OK) {
+        return luaL_error(L, "image.flip failed: %s", esp_err_to_name(err));
+    }
+    return lua_image_push_owned_view(L, &view, buffer->info.timestamp_us);
 }
 
 int luaopen_image(lua_State *L)
 {
     static const luaL_Reg funcs[] = {
+        {"new", lua_module_image_new},
         {"convert", lua_module_image_convert},
         {"resize", lua_module_image_resize},
+        {"crop", lua_module_image_crop},
+        {"rotate", lua_module_image_rotate},
+        {"flip", lua_module_image_flip},
+        {"encode", lua_module_image_encode},
         {"load_file", lua_module_image_load_file},
+        {"load_raw", lua_module_image_load_raw},
         {"save_file", lua_module_image_save_file},
         {NULL, NULL},
     };

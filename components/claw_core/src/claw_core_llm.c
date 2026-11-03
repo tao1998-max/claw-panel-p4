@@ -191,7 +191,18 @@ static esp_err_t claw_core_llm_ensure_runtime_locked(claw_core_handle_t core,
     return claw_core_llm_init(&core->llm_config, &core->llm_runtime, out_error_message);
 }
 
+static void llm_stream_text_cb(const char *text, size_t len, void *ctx)
+{
+    claw_core_state_t *core = (claw_core_state_t *)ctx;
+    if (core->text_delta != NULL) {
+        core->text_delta(text, len, core->text_delta_user_ctx);
+    }
+}
+
 esp_err_t claw_core_llm_chat_messages(claw_core_handle_t core,
+                                      const char *session_id,
+                                      const char *source_channel,
+                                      const char *source_cap,
                                       const char *system_prompt,
                                       cJSON *messages,
                                       const char *tools_json,
@@ -214,10 +225,26 @@ esp_err_t claw_core_llm_chat_messages(claw_core_handle_t core,
         return ESP_ERR_INVALID_ARG;
     }
 
+    bool stream_allowed = core->text_delta != NULL;
+    if (stream_allowed && source_channel != NULL &&
+        strcmp(source_channel, "xiaozhi") == 0) {
+        /* XiaoZhi already speaks its own reply. */
+        stream_allowed = false;
+    }
+    if (stream_allowed && source_cap != NULL &&
+        strcmp(source_cap, "cap_agent_mgr") == 0) {
+        /* Sub-agent completion notes are not user-facing replies. */
+        stream_allowed = false;
+    }
+
     request.system_prompt = system_prompt;
     request.messages = messages;
     request.tools_json = tools_json;
     request.abort_flag = &core->inflight_abort;
+    if (stream_allowed) {
+        request.on_text_delta = llm_stream_text_cb;
+        request.text_delta_ctx = core;
+    }
 
 #if CLAW_CORE_LOG_FULL_LLM_REQUEST
     messages_json = cJSON_PrintUnformatted(messages);
@@ -236,7 +263,13 @@ esp_err_t claw_core_llm_chat_messages(claw_core_handle_t core,
     }
     esp_err_t err = claw_core_llm_ensure_runtime_locked(core, out_error_message);
     if (err == ESP_OK) {
+        if (stream_allowed && core->text_delta_begin != NULL) {
+            core->text_delta_begin(session_id, core->text_delta_user_ctx);
+        }
         err = claw_llm_runtime_chat(core->llm_runtime, &request, out_response, out_error_message);
+        if (stream_allowed && core->text_delta_end != NULL) {
+            core->text_delta_end(core->text_delta_user_ctx);
+        }
     }
     if (core->llm_lock) {
         xSemaphoreGive(core->llm_lock);

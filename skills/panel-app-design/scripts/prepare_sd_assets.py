@@ -18,6 +18,26 @@ from _common import fail, human_bytes, is_relative_inside, safe_join, write_json
 
 KINDS = {"jpeg", "rgb565", "argb8888", "eaf", "ogg"}
 
+# 8x8 ordered Bayer matrix for RGB565 quantization. Optional per-asset
+# ("dither": true) because it removes banding in smooth dark gradients.
+BAYER8 = (
+    (0, 32, 8, 40, 2, 34, 10, 42),
+    (48, 16, 56, 24, 50, 18, 58, 26),
+    (12, 44, 4, 36, 14, 46, 6, 38),
+    (60, 28, 52, 20, 62, 30, 54, 22),
+    (3, 35, 11, 43, 1, 33, 9, 41),
+    (51, 19, 59, 27, 49, 17, 57, 25),
+    (15, 47, 7, 39, 13, 45, 5, 37),
+    (63, 31, 55, 23, 61, 29, 53, 21),
+)
+
+
+def bayer_quantize(value: int, bits: int, x: int, y: int) -> int:
+    levels = (1 << bits) - 1
+    threshold = (BAYER8[y & 7][x & 7] + 0.5) / 64.0 - 0.5
+    q = int(value / 255.0 * levels + 0.5 + threshold)
+    return 0 if q < 0 else (levels if q > levels else q)
+
 
 def load_spec(path: Path):
     try:
@@ -139,11 +159,20 @@ def main() -> int:
         elif kind == "rgb565":
             image = resize_cover(Image.open(source), entry["width"], entry["height"])
             raw = image.tobytes("raw", "RGB")
+            dither = bool(asset.get("dither", False))
+            width, height = entry["width"], entry["height"]
             out = bytearray()
-            for i in range(0, len(raw), 3):
-                r, g, b = raw[i], raw[i + 1], raw[i + 2]
-                value = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-                out += bytes((value & 0xFF, value >> 8))
+            for y in range(height):
+                for x in range(width):
+                    i = (y * width + x) * 3
+                    r, g, b = raw[i], raw[i + 1], raw[i + 2]
+                    if dither:
+                        value = ((bayer_quantize(r, 5, x, y) << 11) |
+                                 (bayer_quantize(g, 6, x, y) << 5) |
+                                 bayer_quantize(b, 5, x, y))
+                    else:
+                        value = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+                    out += bytes((value & 0xFF, (value >> 8) & 0xFF))
             sd_out.write_bytes(out)
             if fallback_path is not None and not args.no_fallbacks:
                 write_jpeg(image, fallback_path, int(asset.get("fallback_quality", 60)))

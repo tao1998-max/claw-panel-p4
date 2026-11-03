@@ -167,6 +167,11 @@ typedef struct {
     void *collect_stage_note_user_ctx;
     claw_core_call_cap_fn call_cap;
     void *cap_user_ctx;
+    /* Streaming LLM content observer. begin/end bracket each LLM round. */
+    void (*text_delta_begin)(const char *session_id, void *user_ctx);
+    void (*text_delta)(const char *text, size_t len, void *user_ctx);
+    void (*text_delta_end)(void *user_ctx);
+    void *text_delta_user_ctx;
     uint32_t task_stack_size;
     UBaseType_t task_priority;
     BaseType_t task_core;

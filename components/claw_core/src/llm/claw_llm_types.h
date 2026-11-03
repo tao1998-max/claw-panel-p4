@@ -93,6 +93,10 @@ typedef struct {
     cJSON *messages;
     const char *tools_json;
     volatile bool *abort_flag;
+    /* Optional SSE content callback. When set, OpenAI-compatible backends
+     * request stream=true and call this for each content delta. */
+    void (*on_text_delta)(const char *text, size_t len, void *ctx);
+    void *text_delta_ctx;
 } claw_llm_chat_request_t;
 
 typedef struct {
@@ -115,6 +119,9 @@ typedef struct {
     volatile bool *abort_flag;
     const claw_llm_http_header_t *headers;
     size_t header_count;
+    /* Called for every raw HTTP body chunk before it is appended. */
+    esp_err_t (*on_chunk)(const char *data, size_t len, void *ctx);
+    void *chunk_ctx;
 } claw_llm_http_json_request_t;
 
 typedef struct {

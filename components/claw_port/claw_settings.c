@@ -187,7 +187,7 @@ esp_err_t claw_settings_get_agent(claw_agent_settings_t *out)
              sizeof(out->max_tokens_field));
     read_str(KEY_AGENT_REASONING, "medium", out->reasoning_effort,
              sizeof(out->reasoning_effort));
-    out->timeout_ms = read_u32(KEY_AGENT_TIMEOUT, 60000);
+    out->timeout_ms = read_u32(KEY_AGENT_TIMEOUT, 180000);
     out->max_tokens = read_u32(KEY_AGENT_MAX_TOK, 3072);
     out->image_max_bytes = read_u32(KEY_AGENT_IMG_MAX, 524288);
     out->supports_tools = read_bool(KEY_AGENT_TOOLS, true);
@@ -263,7 +263,7 @@ esp_err_t claw_settings_set_agent_llm_options(const claw_agent_settings_t *optio
     }
     if (err == ESP_OK) {
         err = write_u32(KEY_AGENT_TIMEOUT,
-                        options->timeout_ms ? options->timeout_ms : 60000);
+                        options->timeout_ms ? options->timeout_ms : 180000);
     }
     if (err == ESP_OK) {
         err = write_u32(KEY_AGENT_MAX_TOK,
