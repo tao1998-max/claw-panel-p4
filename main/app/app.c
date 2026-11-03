@@ -67,6 +67,14 @@ static void log_hardware_summary(void)
     }
 }
 
+/* Claw TTS shares the codec with XiaoZhi. Mute the assistant microphone
+ * while Claw speaks so wake word/ASR cannot hear the reply and issue commands
+ * (the previous crosstalk changed the volume mid-sentence). */
+static void tts_activity(bool active)
+{
+    ai_set_external_audio_active(active);
+}
+
 static bool tts_play_pcm(const int16_t *pcm, size_t samples, uint32_t timeout_ms)
 {
     if (pcm == NULL || samples == 0) {
@@ -153,6 +161,7 @@ void app_start(void)
      * 必须在 ui_init() 之前，ai_ui_init() 要用字体 buffer。 */
     ai_early_init();
     claw_tts_set_playback(tts_play_pcm);
+    claw_tts_set_activity_callback(tts_activity);
 
     /* 先初始化显示与触摸并创建首屏，其余状态由 LVGL 定时器刷新。 */
     if (hw_display_init() == ESP_OK) {

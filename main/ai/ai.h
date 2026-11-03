@@ -66,6 +66,12 @@ void ai_set_wake_word_enabled(bool enabled);
 bool ai_audio_pause_for_exclusive(void);
 void ai_audio_resume_after_exclusive(void);
 
+/* Stop the assistant's microphone processing while another component plays
+ * audio through the shared codec (Claw TTS), so wake word / ASR cannot hear
+ * that audio. Assistant playback is unaffected. No-op when the assistant is
+ * not running or is in a session. */
+void ai_set_external_audio_active(bool active);
+
 #ifdef __cplusplus
 }
 #endif

@@ -30,5 +30,6 @@ bool ai_wake_word_enabled(void) { return false; }
 void ai_set_wake_word_enabled(bool enabled) { (void)enabled; }
 bool ai_audio_pause_for_exclusive(void) { return false; }
 void ai_audio_resume_after_exclusive(void) { }
+void ai_set_external_audio_active(bool active) { (void)active; }
 
 #endif

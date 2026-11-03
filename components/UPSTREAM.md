@@ -183,9 +183,16 @@ Local patches versus upstream:
     IP or `hw_eth_has_ip()`, then applies the persisted IM config. This avoids
     boot-time DNS/token failures from QQ/Feishu/Telegram.
 20. `components/claw_port/claw_tts.c` uses a **128 KB** PCM stream buffer
-    (flow control/backpressure) instead of 2 MB. The 2 MB variant dumped a
-    whole reply into PSRAM and caused a one-frame display flash. TTS worker
-    and player stacks are allocated in PSRAM with `xTaskCreateWithCaps()`.
+    instead of 2 MB. Long replies are split into short TaskRequests (~40
+    chars) paced by a byte credit: the producer waits until the server has
+    delivered all but 64 KB of the PCM for text already sent. This keeps the
+    WebSocket receive task responsive; the old 128 KB pure-backpressure path
+    blocked it for ~60 s on long replies and the peer reset the connection,
+    while a 2 MB buffer caused a one-frame display flash. Claw TTS also pauses
+    the assistant's wake-word/voice processing through
+    `ai_set_external_audio_active()` so XiaoZhi cannot hear/act on Claw audio.
+    TTS worker and player stacks are allocated in PSRAM with
+    `xTaskCreateWithCaps()`.
 21. Display uses two full-screen DPI framebuffers + avoid-tearing in
     Direct mode; the BSP's duplicate `bsp_display_brightness_init()` call was
     removed. `CONFIG_SPI_FLASH_SUPPORT_BOYA_CHIP=y` enables the board's Boya

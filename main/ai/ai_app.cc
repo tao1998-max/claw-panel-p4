@@ -266,6 +266,29 @@ void AiApp::ResumeAudio()
     paused_audio_ = false;
 }
 
+void AiApp::SetExternalAudioActive(bool active)
+{
+    if (active) {
+        /* Never steal the microphone from an assistant session; the caller's
+         * playback path rejects busy audio anyway. */
+        if (audio_service_ == nullptr || !running_.load() ||
+            audio_service_->IsStopped() || IsBusy()) {
+            return;
+        }
+        external_audio_owned_ = true;
+        audio_service_->EnableWakeWordDetection(false);
+        audio_service_->EnableVoiceProcessing(false);
+        return;
+    }
+
+    if (!external_audio_owned_.exchange(false)) {
+        return;
+    }
+    if (audio_service_ != nullptr && running_.load() && !IsBusy()) {
+        SyncIdleAudio();
+    }
+}
+
 bool AiApp::IsBusy() const
 {
     switch (state_.load()) {
@@ -370,7 +393,7 @@ EventBits_t AiApp::WaitEvents(TickType_t ticks)
 void AiApp::SyncIdleAudio()
 {
     if (!audio_service_) return;
-    if (muted_) {
+    if (muted_ || external_audio_owned_.load()) {
         audio_service_->EnableWakeWordDetection(false);
         audio_service_->EnableVoiceProcessing(false);
         return;

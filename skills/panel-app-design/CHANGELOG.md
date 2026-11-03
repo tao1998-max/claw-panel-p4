@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.2 - 2026-11-03
+
+- Firmware baseline sync only; no App API change. Long Claw TTS replies now
+  use byte-credit text pacing with the 128 KB PCM buffer, so they play to
+  completion without the large-buffer display flash. Claw TTS also pauses
+  XiaoZhi's microphone processing while it speaks; `claw.speak` behavior is
+  unchanged.
+
 ## 0.17.1 - 2026-11-03
 
 - Firmware baseline sync only; no App API change. The board now runs C6

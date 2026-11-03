@@ -160,4 +160,9 @@ extern "C" void ai_audio_resume_after_exclusive(void)
     AiApp::GetInstance().ResumeAudio();
 }
 
+extern "C" void ai_set_external_audio_active(bool active)
+{
+    AiApp::GetInstance().SetExternalAudioActive(active);
+}
+
 #endif

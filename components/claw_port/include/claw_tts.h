@@ -36,6 +36,11 @@ typedef struct {
 typedef bool (*claw_tts_play_pcm_fn)(const int16_t *pcm, size_t samples,
                                      uint32_t timeout_ms);
 
+/* Called with true when Claw TTS takes over the speaker and false when it
+ * releases it. Main uses this to mute the assistant microphone so XiaoZhi
+ * does not hear and react to Claw's own reply. */
+typedef void (*claw_tts_activity_fn)(bool active);
+
 /* Create the TTS locks and load persisted credentials (call after NVS init). */
 void claw_tts_init(void);
 
@@ -48,6 +53,7 @@ bool claw_tts_auto_speak_enabled(void);
 
 /* Registered by main after the ES8311 path is available. */
 void claw_tts_set_playback(claw_tts_play_pcm_fn fn);
+void claw_tts_set_activity_callback(claw_tts_activity_fn fn);
 
 /* Synthesize and play text in one streaming session. Blocks for up to
  * timeout_ms (0 = 120 s). */

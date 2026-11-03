@@ -33,23 +33,38 @@ static const char *TAG = "claw.tts";
 #define TTS_NVS_NS            "doubao"
 #define TTS_DEFAULT_TIMEOUT   120000
 #define TTS_RX_MAX            (64 * 1024)
-/* 128 KB ≈ 4 s of 16 kHz mono PCM. The stream buffer doubles as flow
- * control: when it fills, xStreamBufferSend blocks the WebSocket task, so
- * the network cannot dump a whole reply into PSRAM at once. It must stay
- * large enough to absorb network jitter without truncating playback.
- * Do not raise this back to 2 MB: the whole reply then lands in PSRAM at
- * playback start, which shows up as a one-frame full-screen white flash on
- * this panel. 128 KB also keeps long replies complete via backpressure. */
+/* 128 KB ≈ 4 s of 16 kHz mono PCM. Keep this small: with a large buffer the
+ * server dumps the whole reply into PSRAM at once, which starves the DPI
+ * scanout and shows as a one-frame white flash on this panel. Long replies
+ * are kept alive by text-level flow control instead (short TaskRequests
+ * paced by a delivered-audio byte credit), so the WebSocket task never
+ * blocks long enough to miss pings or trip the peer's idle reset. */
 #define TTS_PCM_STREAM_SIZE   (128 * 1024)
 #define TTS_QUEUE_TIMEOUT_MS  5000
+/* Text-level credit control. `pcm_bytes` counts audio the server has already
+ * delivered for the text sent so far; keep the un-delivered remainder below
+ * this many bytes, leaving the rest of the 128 KB buffer as headroom for the
+ * WebSocket task. Without this, a fast LLM can hand the server the whole
+ * reply in seconds, the server then synthesizes tens of seconds ahead, and
+ * the WebSocket task blocks on the full PCM buffer until the peer resets. */
+#define TTS_FLOW_CREDIT_BYTES (TTS_PCM_STREAM_SIZE / 2)
+#define TTS_FLOW_POLL_MS      20
+/* Rough PCM bytes produced per spoken character (16 kHz mono). Chinese TTS is
+ * ~4-5 chars/s, i.e. 6400-8000 bytes/char; this voice measures ~7000. The
+ * empty-buffer fallback below covers voices that speak faster than this. */
+#define TTS_EST_BYTES_PER_CHAR 7000
+/* Doubao recommends short TaskRequests for streaming synthesis. Short chunks
+ * also bound how much audio the server can produce ahead of playback, which
+ * is what keeps the WebSocket receive task responsive on long replies. */
+#define TTS_TASK_CHARS        40
 /* Worker/player stacks are created with xTaskCreateWithCaps() in PSRAM;
  * keeping them out of internal RAM leaves headroom for TLS/Wi-Fi while a
  * reply is being synthesized and played. */
 #define TTS_TASK_STACK        8192
 /* Mild anti-pop ramp: the first PCM of an utterance starts at zero amplitude
- * and ramps up over 100 ms. The TTS-start display flash was traced to the
- * former 2 MB PCM buffer burst, not to this amplitude step; keep the ramp
- * only as an audio-start guard. */
+ * and ramps up over 100 ms. The TTS-start display flash was traced to a
+ * large PCM buffer burst, not to this amplitude step; keep the ramp only as
+ * an audio-start guard. */
 #define TTS_FADE_IN_SAMPLES   (16000 / 10)
 
 #define TTS_EV_CONN_STARTED   (1 << 0)
@@ -84,12 +99,11 @@ typedef struct {
     char session_id[40];
     const char *text;
     uint32_t timeout_ms;
-    size_t pcm_bytes;
+    volatile size_t pcm_bytes;
+    size_t sent_expected_bytes;
     volatile bool session_done;
     volatile bool failed;
     volatile bool session_sent;
-    volatile bool task_sent;
-    bool streaming;
     char error[160];
 } tts_ctx_t;
 
@@ -104,7 +118,11 @@ static tts_ctx_t s_stream_ctx;
 static SemaphoreHandle_t s_cfg_lock;
 static QueueHandle_t s_async_queue;
 static claw_tts_play_pcm_fn s_play_pcm;
+static claw_tts_activity_fn s_activity_cb;
+static volatile bool s_active_notified;
 static portMUX_TYPE s_flag_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static size_t utf8_sequence_len(unsigned char c);
 
 static bool claim_flag(volatile bool *flag)
 {
@@ -296,6 +314,25 @@ void claw_tts_set_playback(claw_tts_play_pcm_fn fn)
     s_play_pcm = fn;
 }
 
+void claw_tts_set_activity_callback(claw_tts_activity_fn fn)
+{
+    s_activity_cb = fn;
+}
+
+/* Only one TTS session can own the speak lock, so a single edge flag is
+ * enough. The callback lets main mute the assistant microphone while Claw
+ * audio plays, so XiaoZhi cannot hear (and react to) its own reply. */
+static void tts_notify_active(bool active)
+{
+    if (s_active_notified == active) {
+        return;
+    }
+    s_active_notified = active;
+    if (s_activity_cb != NULL) {
+        s_activity_cb(active);
+    }
+}
+
 /* ---------- frames ---------- */
 
 static size_t build_frame(uint8_t *out, size_t cap, int event,
@@ -414,28 +451,6 @@ static void start_session(tts_ctx_t *c)
     }
 }
 
-static void start_task(tts_ctx_t *c)
-{
-    if (c->streaming) {
-        return;
-    }
-    if (!claim_flag(&c->task_sent)) {
-        return;
-    }
-    char *payload = make_payload(c->text, TTS_EVENT_TASK_REQUEST, true);
-    if (payload == NULL) {
-        tts_fail(c, "no memory for text payload");
-        return;
-    }
-    esp_err_t err = send_event(c, TTS_EVENT_TASK_REQUEST, c->session_id, payload);
-    cJSON_free(payload);
-    if (err != ESP_OK) {
-        tts_fail(c, "task request send failed");
-        return;
-    }
-    (void)send_event(c, TTS_EVENT_FINISH_SESSION, c->session_id, "{}");
-}
-
 static esp_err_t send_task_text(tts_ctx_t *c, const char *text)
 {
     char *payload = make_payload(text, TTS_EVENT_TASK_REQUEST, true);
@@ -446,6 +461,128 @@ static esp_err_t send_task_text(tts_ctx_t *c, const char *text)
                                payload);
     cJSON_free(payload);
     return err;
+}
+
+/* Copy at most max_chars UTF-8 characters into out (NUL terminated), return
+ * the number of bytes consumed and store the character count. Never splits a
+ * UTF-8 sequence. */
+static size_t utf8_take(const char *text, size_t max_chars, char *out,
+                        size_t out_size, size_t *out_chars)
+{
+    size_t i = 0;
+    size_t chars = 0;
+    size_t o = 0;
+
+    while (text[i] != '\0' && chars < max_chars) {
+        size_t n = utf8_sequence_len((unsigned char)text[i]);
+        if (n > 1 && text[i + 1] == '\0') {
+            break;
+        }
+        if (o + n >= out_size) {
+            break;
+        }
+        memcpy(out + o, text + i, n);
+        i += n;
+        o += n;
+        chars++;
+    }
+    out[o] = '\0';
+    if (out_chars != NULL) {
+        *out_chars = chars;
+    }
+    return i;
+}
+
+/* Wait until the server has delivered enough audio for the text already sent
+ * that the remaining in-flight audio fits in the buffer headroom. This is a
+ * byte credit, not a buffer-level check: it also accounts for text the server
+ * has accepted but not yet turned into audio (the failure mode where the LLM
+ * hands over a whole reply and the server synthesizes far ahead). */
+static bool tts_wait_credit(tts_ctx_t *c, int64_t deadline)
+{
+    bool waiting = false;
+    size_t last_received = 0;
+    int64_t empty_since = 0;
+
+    for (;;) {
+        if (c->failed) {
+            return false;
+        }
+        size_t received = c->pcm_bytes;
+        size_t expected = c->sent_expected_bytes;
+        size_t lead = expected > received ? expected - received : 0;
+        if (lead <= TTS_FLOW_CREDIT_BYTES) {
+            if (waiting) {
+                ESP_LOGD(TAG, "flow resume (lead=%u)", (unsigned)lead);
+            }
+            return true;
+        }
+
+        /* If the playback buffer is empty and no audio has arrived for a
+         * while, the server has already delivered everything for the text
+         * sent (a voice that speaks faster than the byte estimate). Let the
+         * producer continue instead of waiting for audio that will never
+         * come. A blocked WebSocket task has a full buffer, so this cannot
+         * mask real backpressure. */
+        if (received != last_received) {
+            last_received = received;
+            empty_since = 0;
+        } else if (xStreamBufferBytesAvailable(c->pcm_stream) == 0) {
+            int64_t now = esp_timer_get_time();
+            if (empty_since == 0) {
+                empty_since = now;
+            } else if (now - empty_since > 300000) {
+                ESP_LOGD(TAG, "flow fallback: buffer empty, server caught up");
+                return true;
+            }
+        } else {
+            empty_since = 0;
+        }
+
+        if (!waiting) {
+            ESP_LOGD(TAG, "flow wait (lead=%u received=%u)",
+                     (unsigned)lead, (unsigned)received);
+            waiting = true;
+        }
+        if (esp_timer_get_time() > deadline) {
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(TTS_FLOW_POLL_MS));
+    }
+}
+
+/* Split a sentence into short TaskRequests, respecting the audio-delivery
+ * credit before each one. This keeps the WebSocket receive task from blocking
+ * for the whole reply (which made the server reset long sessions after ~60 s)
+ * while retaining the small 128 KB buffer that avoids the display flash. */
+static bool tts_send_text_paced(tts_ctx_t *c, const char *text,
+                                int64_t deadline)
+{
+    size_t len = strlen(text);
+    size_t off = 0;
+    char chunk[TTS_TASK_CHARS * 4 + 1];
+
+    while (off < len) {
+        if (!tts_wait_credit(c, deadline)) {
+            if (!c->failed) {
+                tts_fail(c, "stream flow timeout");
+            }
+            return false;
+        }
+        size_t chars = 0;
+        size_t used = utf8_take(text + off, TTS_TASK_CHARS, chunk,
+                                sizeof(chunk), &chars);
+        if (used == 0 || chars == 0) {
+            break;
+        }
+        c->sent_expected_bytes += chars * TTS_EST_BYTES_PER_CHAR;
+        if (send_task_text(c, chunk) != ESP_OK) {
+            tts_fail(c, "stream text send failed");
+            return false;
+        }
+        off += used;
+    }
+    return true;
 }
 
 static void queue_pcm(tts_ctx_t *c, const uint8_t *data, size_t len)
@@ -539,7 +676,6 @@ static size_t handle_frame(tts_ctx_t *c, const uint8_t *buf, size_t len)
         }
         if (event == TTS_EVENT_SESSION_STARTED) {
             xEventGroupSetBits(c->events, TTS_EV_SESSION_START);
-            start_task(c);
         } else if (event == TTS_EVENT_SESSION_FINISHED) {
             c->session_done = true;
             xEventGroupSetBits(c->events, TTS_EV_SESSION_DONE);
@@ -707,6 +843,7 @@ static esp_err_t tts_speak_once(const char *text, uint32_t timeout_ms)
         timeout_ms = TTS_DEFAULT_TIMEOUT;
     }
     ESP_LOGI(TAG, "speak %u bytes", (unsigned)strlen(text));
+    tts_notify_active(true);
     int64_t started_us = esp_timer_get_time();
     int64_t deadline = started_us + (int64_t)timeout_ms * 1000;
 
@@ -811,6 +948,14 @@ static esp_err_t tts_speak_once(const char *text, uint32_t timeout_ms)
         }
     }
 
+    if (!s_ctx.failed &&
+        tts_send_text_paced(&s_ctx, s_ctx.text, deadline)) {
+        if (send_event(&s_ctx, TTS_EVENT_FINISH_SESSION, s_ctx.session_id,
+                       "{}") != ESP_OK) {
+            tts_fail(&s_ctx, "finish session send failed");
+        }
+    }
+
     if (!s_ctx.failed) {
         int64_t remaining = deadline - esp_timer_get_time();
         if (remaining < 0) remaining = 0;
@@ -845,12 +990,13 @@ static esp_err_t tts_speak_once(const char *text, uint32_t timeout_ms)
     }
     /* The PCM stream is allocated once in PSRAM and reused. Deleting a
      * WithCaps stream buffer trips a TLSF double-free in this IDF build, and
-     * keeping it also avoids a 2 MB alloc/free per utterance. */
+     * keeping it also avoids a repeated alloc/free per utterance. */
     s_ctx.pcm_stream = NULL;
     if (s_ctx.events != NULL) vEventGroupDelete(s_ctx.events);
     if (s_ctx.player_done != NULL) vSemaphoreDelete(s_ctx.player_done);
     if (s_ctx.rx != NULL) heap_caps_free(s_ctx.rx);
     memset(&s_ctx, 0, sizeof(s_ctx));
+    tts_notify_active(false);
 
     return result;
 }
@@ -871,6 +1017,7 @@ static void tts_stream_run(QueueHandle_t queue)
     (void)claw_tts_get_config(&cfg);
     tts_ctx_t *c = &s_stream_ctx;
     const uint32_t timeout_ms = 600000;
+    tts_notify_active(true);
     int64_t started_us = esp_timer_get_time();
     int64_t deadline = started_us + (int64_t)timeout_ms * 1000;
     int64_t start_deadline = started_us + 10000 * 1000;
@@ -911,11 +1058,10 @@ static void tts_stream_run(QueueHandle_t queue)
     c->failed = false;
     c->session_done = false;
     c->session_sent = false;
-    c->task_sent = false;
-    c->streaming = true;
     c->text = NULL;
     c->timeout_ms = timeout_ms;
     c->pcm_bytes = 0;
+    c->sent_expected_bytes = 0;
     c->rx_len = 0;
     c->error[0] = '\0';
     snprintf(c->session_id, sizeof(c->session_id),
@@ -1011,8 +1157,7 @@ static void tts_stream_run(QueueHandle_t queue)
                                      c->session_id, "{}");
                     break;
                 }
-                if (send_task_text(c, segment) != ESP_OK) {
-                    tts_fail(c, "stream text send failed");
+                if (!tts_send_text_paced(c, segment, deadline)) {
                     heap_caps_free(segment);
                     break;
                 }
@@ -1058,11 +1203,10 @@ static void tts_stream_run(QueueHandle_t queue)
         esp_websocket_client_destroy(c->client);
         c->client = NULL;
     }
-    c->streaming = false;
     c->session_done = false;
     c->session_sent = false;
-    c->task_sent = false;
     tts_drain_stream_queue(queue);
+    tts_notify_active(false);
 }
 
 static void tts_stream_task(void *arg)
@@ -1102,7 +1246,9 @@ esp_err_t claw_tts_stream_begin(void)
         return ESP_ERR_INVALID_STATE;
     }
     if (s_stream_queue == NULL) {
-        s_stream_queue = xQueueCreate(32, sizeof(char *));
+        /* Text-level pacing keeps the worker busy while the LLM streams, so
+         * allow the whole reply's sentences to queue up without dropping. */
+        s_stream_queue = xQueueCreate(64, sizeof(char *));
     }
     if (s_stream_queue == NULL) {
         return ESP_ERR_NO_MEM;
@@ -1135,7 +1281,9 @@ esp_err_t claw_tts_stream_feed(const char *text)
         heap_caps_free(clean);
         return ESP_OK;
     }
-    if (xQueueSend(s_stream_queue, &clean, pdMS_TO_TICKS(100)) != pdTRUE) {
+    if (xQueueSend(s_stream_queue, &clean, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGW(TAG, "stream feed queue full, dropping %u bytes",
+                 (unsigned)len);
         heap_caps_free(clean);
         return ESP_ERR_NO_MEM;
     }
