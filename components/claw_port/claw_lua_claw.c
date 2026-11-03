@@ -23,6 +23,7 @@
 #include "lauxlib.h"
 
 #include "cap_lua.h"
+#include "claw_agent.h"
 #include "claw_panel.h"
 #include "claw_paths.h"
 #include "claw_tasks.h"
@@ -506,6 +507,100 @@ static int l_panel_demo(lua_State *L)
     return push_esp_result(L, claw_panel_demo(on));
 }
 
+/* ---------- local agent (小爪) ---------- */
+
+#define CLAW_AGENT_REPLY_MAX 4096
+
+static char *agent_out_alloc(void)
+{
+    return heap_caps_malloc(CLAW_AGENT_REPLY_MAX,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
+
+static int l_ask(lua_State *L)
+{
+    const char *prompt = luaL_checkstring(L, 1);
+    lua_Integer timeout = luaL_optinteger(L, 2, 30000);
+    if (timeout < 1000) timeout = 1000;
+    if (timeout > 120000) timeout = 120000; /* claw_agent_ask caps at this max */
+
+    char *out = agent_out_alloc();
+    if (out == NULL) {
+        return push_fail(L, "out of memory");
+    }
+    esp_err_t err = claw_agent_ask(prompt, "lua", (uint32_t)timeout, out,
+                                   CLAW_AGENT_REPLY_MAX);
+    if (err == ESP_OK) {
+        lua_pushstring(L, out);
+        heap_caps_free(out);
+        return 1;
+    }
+    int n = push_fail(L, out[0] != '\0' ? out : esp_err_to_name(err));
+    heap_caps_free(out);
+    return n;
+}
+
+static int l_agent_task(lua_State *L)
+{
+    const char *prompt = luaL_checkstring(L, 1);
+    const char *name = luaL_optstring(L, 2, "");
+    lua_Integer timeout = luaL_optinteger(L, 3, 0); /* 0 = agent default */
+
+    char out[256];
+    esp_err_t err = claw_agent_start_task(name, prompt, (uint32_t)timeout, out,
+                                          sizeof(out));
+    if (err != ESP_OK) {
+        return push_fail(L, out[0] != '\0' ? out : esp_err_to_name(err));
+    }
+    cJSON *root = cJSON_Parse(out);
+    if (root == NULL) {
+        return push_fail(L, "bad task receipt");
+    }
+    const cJSON *task_id = cJSON_GetObjectItemCaseSensitive(root, "task_id");
+    if (cJSON_IsString(task_id) && task_id->valuestring != NULL) {
+        lua_pushstring(L, task_id->valuestring);
+    } else {
+        lua_pushnil(L);
+    }
+    cJSON_Delete(root);
+    return 1;
+}
+
+static int l_agent_task_stop(lua_State *L)
+{
+    const char *task_id = luaL_checkstring(L, 1);
+    lua_Integer wait_ms = luaL_optinteger(L, 2, 1500);
+
+    char out[256];
+    esp_err_t err = claw_agent_stop_task(task_id, (uint32_t)wait_ms, out,
+                                         sizeof(out));
+    if (err == ESP_OK || err == ESP_ERR_TIMEOUT) {
+        lua_pushstring(L, out); /* {"task_id":...,"state":...} */
+        return 1;
+    }
+    return push_fail(L, out[0] != '\0' ? out : esp_err_to_name(err));
+}
+
+static int l_agent_task_output(lua_State *L)
+{
+    const char *task_id = luaL_checkstring(L, 1);
+
+    char *out = agent_out_alloc();
+    if (out == NULL) {
+        return push_fail(L, "out of memory");
+    }
+    esp_err_t err = claw_agent_get_task_output(task_id, out,
+                                               CLAW_AGENT_REPLY_MAX);
+    if (err == ESP_OK) {
+        lua_pushstring(L, out);
+        heap_caps_free(out);
+        return 1;
+    }
+    int n = push_fail(L, out[0] != '\0' ? out : esp_err_to_name(err));
+    heap_caps_free(out);
+    return n;
+}
+
 /* ---------- module ---------- */
 
 static int l_speak(lua_State *L)
@@ -520,6 +615,10 @@ static int l_speak(lua_State *L)
 static const luaL_Reg claw_funcs[] = {
     {"log", l_log},
     {"speak", l_speak},
+    {"ask", l_ask},
+    {"agent_task", l_agent_task},
+    {"agent_task_stop", l_agent_task_stop},
+    {"agent_task_output", l_agent_task_output},
     {"time", l_time},
     {"uptime_ms", l_uptime_ms},
     {"sleep", l_sleep},

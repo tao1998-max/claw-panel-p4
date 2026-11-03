@@ -200,5 +200,12 @@ Local patches versus upstream:
 22. Network bring-up (Wi-Fi/C6 and Ethernet) runs in a background
     `net_init` task after the UI is created; the ETH PHY reset no longer
     blocks app startup.
+23. `claw_lua_claw.c` exposes the LOCAL agent (小爪) to Lua:
+    `claw.ask(prompt[, timeout_ms])` (sync, default 30 s / max 120 s),
+    `claw.agent_task(prompt[, name[, timeout_ms]])` plus
+    `claw.agent_task_output` / `claw.agent_task_stop`. These wrap
+    `claw_agent_ask` / `claw_agent_start_task` / `claw_agent_stop_task` /
+    `claw_agent_get_task_output` with `origin="lua"`; failures return the
+    agent's Chinese error text as `nil, err`.
 
 `Lua` itself is the managed `espressif/lua` component (pinned `^5.5.1`).

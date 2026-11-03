@@ -1,6 +1,6 @@
 ---
 name: panel-app-design
-description: Design, validate, and deliver LVGL Lua apps for the 1024x600 ESP32-P4 panel. Use when creating or redesigning a launcher App, including Chinese UI, text input and layout, poster-style layered visuals, spoken TTS feedback via claw.speak, SD-card or FAT app packages, SD fallback, serial/RS485 I/O (UART1), networking (TCP/UDP/HTTP, MQTT, WebSocket, Lua HTTP routes), and Web upload. Do not use for firmware/native drivers, device-side ESP-Claw skills, or generic Lua scripts.
+description: Design, validate, and deliver LVGL Lua apps for the 1024x600 ESP32-P4 panel. Use when creating or redesigning a launcher App, including Chinese UI, text input and layout, poster-style layered visuals, spoken TTS feedback via claw.speak, local-agent calls via claw.ask/agent_task, SD-card or FAT app packages, SD fallback, serial/RS485 I/O (UART1), networking (TCP/UDP/HTTP, MQTT, WebSocket, Lua HTTP routes), and Web upload. Do not use for firmware/native drivers, device-side ESP-Claw skills, or generic Lua scripts.
 ---
 
 # Panel App Design
@@ -21,6 +21,9 @@ Use this skill when the task is a **launcher App** for this panel:
 - images, sprites, animations, or audio;
 - spoken feedback with `claw.speak()` (Doubao TTS) — explicit, blocking, and
   independent of the Agent auto-speak switch;
+- local-agent (小爪) calls: `claw.ask()` synchronous Q&A and
+  `claw.agent_task`/`agent_task_output`/`agent_task_stop` background runs —
+  `nil, err` when the Agent is off, unconfigured, or busy;
 - FAT or SD package plus optional SD assets and fallback;
 - validation and LAN upload;
 - networking: TCP/UDP/DNS/HTTP clients, MQTT, WebSocket, and Lua HTTP routes.

@@ -319,6 +319,11 @@ u:close()
 - Lua：`claw.speak(text[, timeout_ms])`，用一个流式 TTS 会话播完，阻塞到播放结束；
   默认 120 s、最长 600 s。它是显式调用，不受“自动播报”开关影响；emoji/符号会
   在合成前清洗，返回 `true` 或 `nil, err`。
+- Lua 也可直接调用本地 Agent：`claw.ask(prompt[, timeout_ms])` 同步问答
+  （默认 30 s、最长 120 s，阻塞 Lua 任务；自动播报开启时回复照常朗读），
+  `claw.agent_task(prompt[, name[, timeout_ms]])` 后台运行并立即返回 task_id，
+  `claw.agent_task_output(task_id)` 轮询结果、`claw.agent_task_stop(task_id[,
+  wait_ms])` 取消。Agent 未开启/未配置或正忙时返回 `nil, err`（错误文本为中文）。
 - 本地 Agent 的 OpenAI 兼容后端（DeepSeek 等）使用 SSE 流式请求，并复用同一条
   HTTPS 连接（keep-alive），避免每次提问重新做 TLS 握手；增量文本会实时显示在设备
   聊天页的临时气泡里，并按句提前送 TTS，最终回答仍完整写入会话历史。

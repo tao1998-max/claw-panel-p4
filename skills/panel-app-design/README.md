@@ -28,6 +28,11 @@
 - **语音合成**：`claw.speak(text[, timeout_ms])` 调用豆包 TTS 播报任意文字；
   显式调用、不受“自动播报”开关影响，需要设备已配置豆包凭据，阻塞播放
   （默认 120 s、最长 600 s），emoji 自动清洗；
+- **本地 Agent（小爪）**：`claw.ask(prompt[, timeout_ms])` 同步问答（默认
+  30 s、最长 120 s，阻塞任务线程，回复会按“自动播报”开关照常朗读）；
+  `claw.agent_task(prompt[, name[, timeout_ms]])` 后台任务立即返回 task_id，
+  `claw.agent_task_output/agent_task_stop` 轮询/取消；Agent 未开启或忙时
+  返回 `nil, err`；
 - **音频**：`audio.play` 短音效、`open_output`/`open_input` PCM、
   OGG/Opus player、WAV 录音、电平/FFT 频谱分析；共享小智 AudioService；
   本地/HTTP(S) MP3 流按原生采样率独占 ES8311 播放（期间小智语音暂停，

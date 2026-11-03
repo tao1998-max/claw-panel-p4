@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.18.0 - 2026-11-03
+
+- New App API — local agent (小爪) from Lua: `claw.ask(prompt[, timeout_ms])`
+  (synchronous, default 30 s / max 120 s, blocks the job task, reply is
+  auto-spoken when 自动播报 is on), `claw.agent_task(prompt[, name[,
+  timeout_ms]])` (background run, returns task_id immediately),
+  `claw.agent_task_output(task_id)`, `claw.agent_task_stop(task_id[,
+  wait_ms])`. All return `nil, err` when the Agent is off, unconfigured, or
+  busy. SKILL.md/README capability lists updated; the device seed (46) ships
+  the expanded `claw` module doc.
+
 ## 0.17.2 - 2026-11-03
 
 - Firmware baseline sync only; no App API change. Long Claw TTS replies now

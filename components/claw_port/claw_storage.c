@@ -28,9 +28,9 @@ static const char *TAG = "claw_storage";
 /* The suffix is part of the marker so toggling the optional hardware-module
  * Kconfig re-runs the seed pass and restores/removes their docs. */
 #if CONFIG_TEMPLATE_CLAW_LUA_UNUSED_HW_MODULES
-#define CLAW_SEED_VERSION    "45-hw"
+#define CLAW_SEED_VERSION    "46-hw"
 #else
-#define CLAW_SEED_VERSION    "45"
+#define CLAW_SEED_VERSION    "46"
 #endif
 
 #define CLAW_DATA_DIR   CLAW_STORAGE_DATA_DIR
