@@ -1,0 +1,21 @@
+P4 HMI Template
+Copyright 2026 The P4 HMI Template Authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+It includes third-party software and assets that remain under their own
+licenses:
+
+- XiaoZhi-ESP32 client code and prompt audio: MIT.
+  See main/ai/vendor/LICENSE.xiaozhi.
+- ESP-Claw components and web UI: Apache-2.0.
+  See components/LICENSE.esp-claw.
+- Espressif board support and sensor components: Apache-2.0.
+  See the LICENSE files under local_components/.
+- ESP-SR wake word models (assets/ai/srmodels.bin): Espressif MIT, use is
+  limited to Espressif products.
+- Puhui/Noto chat font (assets/ai/font_puhui_common_20_4.bin) and Noto
+  subsets: SIL Open Font License 1.1. See skills/panel-app-design/assets/
+  examples/OFL.txt and assets/ai_src/FONT_LICENSE.txt.
+- Material Design Icons: Apache-2.0, Pictogrammers. See tools/fonts/mdi/LICENSE.
+
+The full attribution list is in assets/ai/THIRD_PARTY_NOTICES.txt.

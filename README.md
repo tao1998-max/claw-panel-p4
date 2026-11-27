@@ -554,6 +554,16 @@ end
   含 ASCII）；emoji 和极生僻字仍可能显示方框。
 - `CONFIG_TEMPLATE_XIAOZHI_AUTO_LISTEN` / `AUTO_OPEN_CHAT` 仅用于台架验证，正常固件保持关闭。
 
+## 许可证
+
+本项目以 **Apache License 2.0** 开源，见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
+
+仓库内含第三方代码和资源，各自保留原许可证：XiaoZhi 客户端（MIT）、
+ESP-Claw 组件与 Web UI（Apache-2.0）、Espressif BSP / sensor 组件
+（Apache-2.0）、ESP-SR 唤醒词模型（Espressif MIT，仅限 Espressif 芯片）、
+Puhui/Noto 字体（OFL-1.1）、Material Design Icons（Apache-2.0）。
+完整清单见 `assets/ai/THIRD_PARTY_NOTICES.txt`。
+
 ## 二次开发入口
 
 ```c
