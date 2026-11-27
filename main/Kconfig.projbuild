@@ -1,4 +1,4 @@
-menu "P4 Template"
+menu "Claw Panel P4"
 
     menu "ESP-Claw IM transports"
         config APP_CLAW_CAP_IM_QQ
