@@ -1,6 +1,7 @@
-# P4 HMI Template — JC1060P470C_I_W_Y
+# Claw Panel P4 — JC1060P470C_I_W_Y
 
-ESP32-P4 + ESP32-C6，7 寸 1024×600 IPS 电容触摸屏的**基础模板工程**。
+ESP32-P4 + ESP32-C6，7 寸 1024×600 IPS 电容触摸屏的**HMI 面板工程**：LVGL 桌面、
+ESP-Claw 本地 Agent、Lua 应用框架与 Web 管理端。
 把厂商散落在各个 demo 里的硬件初始化集中到一套可复用的代码里，上电即可看到一块带状态面板的屏幕。
 
 ## 已接入的硬件
