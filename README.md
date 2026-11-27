@@ -1,8 +1,66 @@
 # Claw Panel P4 — JC1060P470C_I_W_Y
 
-ESP32-P4 + ESP32-C6，7 寸 1024×600 IPS 电容触摸屏的**HMI 面板工程**：LVGL 桌面、
-ESP-Claw 本地 Agent、Lua 应用框架与 Web 管理端。
-把厂商散落在各个 demo 里的硬件初始化集中到一套可复用的代码里，上电即可看到一块带状态面板的屏幕。
+ESP32-P4 + ESP32-C6，7 寸 1024×600 IPS 电容触摸屏的**一体化 HMI 面板**：
+LVGL 桌面、ESP-Claw 本地 Agent、小智 AI 语音、Lua 应用框架与 Web 管理端，
+上电即可运行。把厂商散落在各个 demo 里的硬件初始化集中到一套可复用的代码里。
+
+## 功能概览
+
+| 能力 | 说明 |
+|---|---|
+| **桌面式界面** | Aurora 深色主题，顶栏 / 内容区 / 底栏；应用主页、设备状态、历史曲线、Claw、设置 |
+| **ESP-Claw 本地 Agent** | 在设备本地运行 Lua 脚本、后台任务和定时任务，内置 MCP 工具，可被语音调用 |
+| **小智 AI 语音** | WebSocket 半双工语音对话、唤醒词「你好小智」；语音控制音量、亮度、运行脚本 |
+| **Lua 应用框架** | App 以 FAT/SD 包分发；内置 21 点、霓虹老虎机、天气、摩斯电码、网络电台等示例 |
+| **Web 管理端** | 浏览器访问设备 IP：状态、Wi-Fi/LLM 配置、文件管理、应用启停与自检 API |
+| **完整外设** | MIPI-DSI 显示 + GT911 触摸、ES8311 音频、OV02C10 摄像头、SD、RTC、RS485、以太网、C6 Wi-Fi |
+
+## 快速开始
+
+### 1. 硬件与软件
+
+- **硬件**：JC1060P470C_I_W_Y（ESP32-P4 rev < 3.0 + ESP32-C6，16 MB Flash / 32 MB PSRAM，7 寸 1024×600）
+- **软件**：ESP-IDF **5.5.x**（实测 5.5.5）、Python 3、可用的 USB 串口
+
+```bash
+git clone https://github.com/tao1998-max/claw-panel-p4.git
+cd claw-panel-p4
+```
+
+### 2. 编译与烧录
+
+```bash
+idf.py build
+idf.py -p <PORT> flash        # 分区表 + 应用
+idf.py -p <PORT> claw-flash   # 首次烧录/整片擦除后：写入 4 MB AI 资源 FAT
+idf.py -p <PORT> monitor
+```
+
+> Windows 下用裸 cmd/Git Bash 而不是 ESP-IDF 自带环境时，需要先设置
+> `ESP_IDF_VERSION=5.5`，否则 C6 SDIO Wi-Fi 的 Kconfig 不生效。分区布局和编译细节见下方
+> 「编译与烧录」。
+
+### 3. 首次开机
+
+1. **联网**：设置 → 网络，选择 Wi-Fi 并输入密码；联网后顶栏显示网络图标。
+2. **小智 AI（可选）**：设置 → AI 助手，按提示到 <https://xiaozhi.me> 绑定 6 位激活码。
+3. **豆包 TTS（可选）**：Claw → 设置 → 豆包语音，填入 App ID / Access Token。
+4. **Web 管理端**：浏览器打开 `http://<设备IP>/`（IP 在设置或设备状态页查看）。
+
+### 4. 安装示例 App
+
+```bash
+python skills/panel-app-design/scripts/upload_app.py \
+    --host http://<设备IP> --app-dir apps/blackjack
+```
+
+上传后主页自动出现图标；SD 卡包加 `--volume sd`。完整工具链见
+[`skills/panel-app-design/`](skills/panel-app-design/README.md)。
+
+### 5. 用 AI 设计新 App
+
+把 [`skills/panel-app-design/SKILL.md`](skills/panel-app-design/SKILL.md) 交给支持
+Skill 的 AI 工具，即可按本仓库的 LVGL API、字体和资源规范生成新的面板 App。
 
 ## 已接入的硬件
 
@@ -40,7 +98,7 @@ ESP-Claw 本地 Agent、Lua 应用框架与 Web 管理端。
 ## 目录结构
 
 ```
-p4_template/
+claw-panel-p4/
 ├── CMakeLists.txt               只引入 local_components 下的 P4 BSP + esp_cam_sensor
 ├── partitions.csv               16MB：双 5.9375M OTA app + 4M FAT（/fatfs/ai + /fatfs/claw）
 ├── components/                  ★ESP-Claw 裁剪组件 + claw_port 适配层 + Lua 网络模块
@@ -263,14 +321,12 @@ ETH PHY 约 4.7 s，但已放到后台，不再阻塞 UI/Claw；C6 SDIO 握手�
 ## 编译与烧录
 
 ```bash
-# 激活环境（EIM 安装的 IDF 5.5.5）
-C:\Espressif\tools\Microsoft.v5.5.5.PowerShell_profile.ps1
-
-cd E:\Demo_IDF\ESP-IDF_5.5.4\JC1060P470C_I_W_Y_New_Panel\p4_template
+# 先激活 ESP-IDF 5.5.x 环境（安装器/EIM 生成的 profile 或 export.sh）
+cd claw-panel-p4
 idf.py build
-idf.py -p COM27 flash           # 分区表 + app，不含 AI 资源
-idf.py -p COM27 claw-flash      # 首次迁移/整片擦除后：写 4 MB AI 资源 FAT
-idf.py -p COM27 monitor
+idf.py -p <PORT> flash           # 分区表 + app，不含 AI 资源
+idf.py -p <PORT> claw-flash      # 首次迁移/整片擦除后：写 4 MB AI 资源 FAT
+idf.py -p <PORT> monitor
 ```
 
 构建产物（小智开启）：`p4_template.bin` 约 **4.91 MB**（`0x4B0E80`），5.9375 MB OTA app 分区剩余 21%；
@@ -349,7 +405,7 @@ Remove-Item -Recurse -Force build
 
 ```bash
 idf.py menuconfig
-# P4 Template → 启动 MIPI-CSI 摄像头 / 启动 Wi-Fi
+# Claw Panel P4 → 启动 MIPI-CSI 摄像头 / 启动 Wi-Fi
 ```
 
 - **摄像头**：本板模组是 OV02C10，接好即可用，上电会自检并抓一帧（`Stream=1` 后约 90 ms）。
@@ -365,8 +421,8 @@ idf.py menuconfig
 
 ```bash
 idf.py menuconfig
-# P4 Template → 启用小智 AI 语音助手
-idf.py -p COM27 flash monitor
+# Claw Panel P4 → 启用小智 AI 语音助手
+idf.py -p <PORT> flash monitor
 ```
 
 - 首次联网后固件会 POST 官方 OTA（默认 `https://api.tenclass.net/xiaozhi/ota/`），
