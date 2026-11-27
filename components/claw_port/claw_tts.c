@@ -1431,7 +1431,21 @@ esp_err_t claw_tts_speak_async(const char *text)
     if (!claw_tts_auto_speak_enabled()) {
         return ESP_ERR_INVALID_STATE;
     }
+    return claw_tts_speak_async_any(text);
+}
+
+/* Explicit fire-and-forget speak: queued to the same worker as auto-speak but
+ * not gated by the auto-speak switch. Used by Lua `claw.speak_async()` so a
+ * game can announce results without blocking its job task. */
+esp_err_t claw_tts_speak_async_any(const char *text)
+{
+    if (text == NULL || text[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
     ensure_init();
+    if (!claw_tts_is_configured() || s_play_pcm == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (s_async_queue == NULL) {
         s_async_queue = xQueueCreate(32, sizeof(char *));
         if (s_async_queue == NULL) {

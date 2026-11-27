@@ -26,6 +26,10 @@ script `args` copy, plus small file/JSON/panel helpers.
   registered.
 - `claw.speak(text[, timeout_ms])` - synthesize text with Doubao TTS and play
   it through the ES8311. See **TTS / Voice** below.
+- `claw.speak_async(text)` - fire-and-forget version of `claw.speak`: returns
+  immediately and plays when the TTS worker is free. Not gated by the
+  “自动播报” switch (still needs configured credentials). Use it in games and
+  UI feedback so the job task never blocks on speech.
 - `claw.ask(prompt[, timeout_ms])` - ask the LOCAL agent (小爪) and wait for
   its reply. See **Local agent (小爪)** below.
 - `claw.agent_task(prompt[, name[, timeout_ms]])` - start a background 小爪 run

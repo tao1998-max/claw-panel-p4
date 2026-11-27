@@ -612,9 +612,18 @@ static int l_speak(lua_State *L)
     return push_esp_result(L, claw_tts_speak(text, (uint32_t)timeout));
 }
 
+/* Fire-and-forget speak: returns immediately, plays when the TTS queue is
+ * free. Used by games for win announcements without blocking the job task. */
+static int l_speak_async(lua_State *L)
+{
+    const char *text = luaL_checkstring(L, 1);
+    return push_esp_result(L, claw_tts_speak_async_any(text));
+}
+
 static const luaL_Reg claw_funcs[] = {
     {"log", l_log},
     {"speak", l_speak},
+    {"speak_async", l_speak_async},
     {"ask", l_ask},
     {"agent_task", l_agent_task},
     {"agent_task_stop", l_agent_task_stop},

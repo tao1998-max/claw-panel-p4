@@ -62,6 +62,10 @@ esp_err_t claw_tts_speak(const char *text, uint32_t timeout_ms);
 /* Queue text for the auto-speak worker; returns immediately. */
 esp_err_t claw_tts_speak_async(const char *text);
 
+/* Same queue, but not gated by the auto-speak switch (explicit calls such as
+ * Lua `claw.speak_async()`); still requires configured credentials. */
+esp_err_t claw_tts_speak_async_any(const char *text);
+
 /* One WebSocket/session for a whole LLM round. Feed sentence chunks as they
  * arrive, then end() once; the worker sends FinishSession and plays remaining
  * audio. begin() returns once the worker owns the TTS lock. */
