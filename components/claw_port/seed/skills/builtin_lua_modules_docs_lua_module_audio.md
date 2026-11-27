@@ -56,7 +56,11 @@ player:stop()
 player:close()
 ```
 
-- Local OGG/Opus files go through the assistant's 16 kHz path.
+- Local OGG/Opus files go through the assistant's 16 kHz path. The demuxer
+  only understands OGG containers holding an **Opus** stream: OGG-Vorbis
+  files are dropped silently (no error, no log), so always encode sfx with
+  `ffmpeg -c:a libopus -b:a 24k -ar 16000 -ac 1`. Verify with
+  `head -c 40 file.ogg | grep -a OpusHead`.
 - Local `.mp3` files and `http://` / `https://` MP3 streams play at their
   **native** sample rate and channel count.
 - `wait = true` waits for the file to finish (60 s cap); a live stream does

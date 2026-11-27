@@ -19,6 +19,7 @@
 | Chart redraw stutters / App feels slow | Rows built with `string.rep`/`string.sub`/`table.concat`, or `frame:data()` copies | Reuse one `image.new` canvas, draw with `fill_rect`/`line`, then `img:set_frame(canvas)` |
 | MP3 play returns `nil, "assistant busy..."` | Assistant connecting/listening/speaking; MP3 needs the exclusive codec | Retry when idle; MP3 pauses the assistant, so wake word/voice is unavailable while it plays |
 | MP3 has no sound but `play` returned true | Check `player:poll().state/error`; assistant may have been busy or the codec exclusive open failed | Wait for `finished`/`stopped`; retry if `state=="error"` (`audio.md` MP3 section) |
+| App runs, UI works, but every OGG sfx is silent | The OGG holds a Vorbis stream (`\x01vorbis`), not Opus — the firmware demuxer drops Vorbis with no log or error | Re-encode with `-c:a libopus -b:a 24k -ar 16000 -ac 1`; verify `head -c 40 f.ogg \| grep -a OpusHead` |
 | Dark background shows coloured blocks / banding | Large JPEG decoded on device; 4:2:0 chroma upsampling + RGB565 quantization | Generate a dithered raw with `make_raw_background.py`, load via `image.load_raw` + `set_frame`; keep the JPEG as fallback |
 | SD asset never loads | Card inserted after boot; wrong `app_id` path | Insert before power-on; verify `/sdcard/panel-assets/<id>/` |
 | SD API returns 503 | Card not mounted | Insert card, reboot; mount happens once at boot |

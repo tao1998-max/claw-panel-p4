@@ -53,6 +53,22 @@ out:write(pcm)                             -- 16 kHz mono 16-bit, even length
 out:close()
 ```
 
+> **SFX must be OGG-Opus.** The firmware sound path (XiaoZhi AudioService
+> `OggDemuxer` → Opus decode queue) only understands OGG containers holding an
+> Opus stream. OGG-**Vorbis** files are dropped **silently** — no error, no
+> log, `audio.play()` still reports success, the App just stays mute. Always
+> encode effects with libopus:
+>
+> ```bash
+> ffmpeg -i in.wav -c:a libopus -b:a 24k -ar 16000 -ac 1 out.ogg
+> ```
+>
+> 16 kHz mono matches the fixed 16 kHz pipeline (the Opus decoder resamples,
+> but there is no reason to pay for it). Verify the container with
+> `head -c 40 out.ogg | grep -a OpusHead` — a `\x01vorbis` identification
+> header means the file will never play. See `assets/examples/slot_machine/`
+> for a generator that got this wrong and was fixed.
+
 ## Module functions
 
 | Function | Returns | Notes |
@@ -172,7 +188,9 @@ rec:close()
 - PCM output, tones, OGG/Opus and recording are 16 kHz mono 16-bit. MP3/stream
   output is native 8–48 kHz, 16-bit stereo (mono duplicated).
 - Local OGG/Opus files and local/HTTP(S) MP3 only: AAC/HLS playback is not
-  implemented; no seek, pause/resume or per-effect volume.
+  implemented; no seek, pause/resume or per-effect volume. OGG-Vorbis is
+  **not** a fallback — Vorbis files fail silently (no log, no error), so
+  treat "Opus only" as a hard requirement, not a preference.
 - MP3/radio pauses the assistant AudioService: wake word/voice and input/
   recorder/analyzer are unavailable while it plays. One stream at a time.
 - Recording and analysis share the microphone tap with WakeNet/AFE; expect

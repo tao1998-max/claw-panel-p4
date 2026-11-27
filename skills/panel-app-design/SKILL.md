@@ -364,7 +364,7 @@ save a card reader.
 - [`references/design-system.md`](references/design-system.md) - grid, tokens, states, anti-template checks.
 - [`references/visual-layering.md`](references/visual-layering.md) - L0-L3 art pipeline and memory.
 - [`references/lvgl-lua-api.md`](references/lvgl-lua-api.md) - supported APIs and limits.
-- [`references/audio.md`](references/audio.md) - output/input/player/recorder/analyzer, OGG paths, native-rate MP3 exclusive playback, shared-AudioService limits, and `claw.speak()` Doubao TTS.
+- [`references/audio.md`](references/audio.md) - output/input/player/recorder/analyzer, OGG paths (**Opus only** — Vorbis sfx are silently dropped), native-rate MP3 exclusive playback, shared-AudioService limits, and `claw.speak()` Doubao TTS.
 - [`references/networking.md`](references/networking.md) - net/mqtt/websocket modules, budgets, `next_event` loops, LAN HTTP routes.
 - [`references/serial.md`](references/serial.md) - RS485/UART1 pins, `uart` module, in-app polling/lifecycle and request/response patterns.
 - [`references/fonts-cn.md`](references/fonts-cn.md) - Noto subset and coverage.
