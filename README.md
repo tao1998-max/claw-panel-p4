@@ -4,6 +4,13 @@ ESP32-P4 + ESP32-C6，7 寸 1024×600 IPS 电容触摸屏的**一体化 HMI 面�
 LVGL 桌面、ESP-Claw 本地 Agent、小智 AI 语音、Lua 应用框架与 Web 管理端，
 上电即可运行。把厂商散落在各个 demo 里的硬件初始化集中到一套可复用的代码里。
 
+## 演示视频
+
+[![ESP32P4 还能这么玩：在线生成应用](https://i1.hdslb.com/bfs/archive/a844b950c46458c10f5aa6394c897a3bfbb8f12c.jpg)](https://www.bilibili.com/video/BV1z7sm6YEdS)
+
+▶ [在 Bilibili 观看（8 分钟）](https://www.bilibili.com/video/BV1z7sm6YEdS)：桌面界面、
+Lua 应用在线生成与运行、本地 Agent 语音控制。
+
 ## 功能概览
 
 | 能力 | 说明 |
